@@ -6,4 +6,4 @@ TARGET_GROUP_CLASS_NAME = ['Region', 'Racism', 'Sexism', 'LGBTQ', 'others', 'non
 MAX_SEQ_LENGTH = 128
 
 
-BATCH_SIZE = 16
+BATCH_SIZE = 4
