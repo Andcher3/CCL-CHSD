@@ -81,8 +81,8 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     batch_ids = []
     batch_quads_labels = []  # 存储每个样本的 quad 标签列表
 
-    for key in batch[0].keys():
-        print(key, batch[0][key])
+    # for key in batch[0].keys():
+    #     print(key, batch[0][key])
     # 3. 遍历批次中的每个样本，进行填充并收集数据
     for item in batch:
         # 获取当前样本的BERT输入
