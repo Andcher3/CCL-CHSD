@@ -2,75 +2,71 @@
 import torch
 import torch.nn as nn
 from typing import Dict, List, Any
-from Hype import TOPK_SPAN, MAX_SPAN_LENGTH  # 假设 Hype.py 中定义了这两个常量
+from iou_loss import SpanIoUWeightedLoss
+from Hype import *  # 假设 Hype.py 中定义了这两个常量
+import torch.nn.functional as F
 
 # 损失函数实例
-span_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
+pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
 group_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 hateful_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 pair_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 
 
+# ===== 3. 用到的辅助函数：为 Argument 定位标签 =====
+def _make_arg_start_labels(quads_labels_batch, seq_len, device):
+    B = len(quads_labels_batch)
+    labels = torch.zeros((B, seq_len), device=device)
+    for b, quads_list in enumerate(quads_labels_batch):
+        for quad in quads_list:
+            as_idx = quad['a_start_token'].item()
+            if 0 <= as_idx < seq_len:
+                labels[b, as_idx] = 1.0
+    return labels
+
+def _make_arg_end_labels(quads_labels_batch, seq_len, device):
+    B = len(quads_labels_batch)
+    labels = torch.zeros((B, seq_len), device=device)
+    for b, quads_list in enumerate(quads_labels_batch):
+        for quad in quads_list:
+            ae_idx = quad['a_end_token'].item()
+            if 0 <= ae_idx < seq_len:
+                labels[b, ae_idx] = 1.0
+    return labels
+
+
+# ===== 4. compute_total_loss 的完整实现 =====
 def compute_total_loss(outputs: Dict[str, torch.Tensor],
                        quads_labels_batch: List[List[Dict[str, Any]]],
                        model: nn.Module,
                        device: torch.device,
-                       span_weight: float = 1.0,
-                       group_weight: float = 0.5,
+                       span_weight: float    = 1.0,
+                       group_weight: float   = 0.5,
                        hateful_weight: float = 0.5,
-                       biaffine_weight: float = 1.0
+                       biaffine_weight: float= 1.0
                        ) -> (torch.Tensor, Dict[str, float]):
-    """
-    计算总损失，包括 Span 抽取、Biaffine 配对、群体多标签和 Hate 二分类。
-    """
 
-    # ---- 1. 准备 logits 和 hidden states ----
-    # logits 形状均为 [B, L, 1]，我们 squeeze(-1) 得到 [B, L]
-    t_start_logits = outputs['target_start_logits'].squeeze(-1)  # [B, L]
-    t_end_logits = outputs['target_end_logits'].squeeze(-1)  # [B, L]
-    a_start_logits = outputs['argument_start_logits'].squeeze(-1)  # [B, L]
-    a_end_logits = outputs['argument_end_logits'].squeeze(-1)  # [B, L]
+    # 1. 从模型输出里拿到各 logits
+    # shape: [B, L, 1] → squeeze → [B, L]
+    t_start_logits = outputs['target_start_logits'].squeeze(-1)   # [B, L]
+    t_end_logits   = outputs['target_end_logits'].squeeze(-1)     # [B, L]
+    a_start_logits = outputs['argument_start_logits'].squeeze(-1) # [B, L]
+    a_end_logits   = outputs['argument_end_logits'].squeeze(-1)   # [B, L]
     sequence_output = outputs['sequence_output']  # [B, L, H]
-    cls_output = outputs['cls_output']  # [B,   H]
+    cls_output      = outputs['cls_output']       # [B,   H]
 
     batch_size, seq_len = t_start_logits.size()
-    hidden_size = sequence_output.size(-1)
 
-    # 先把各项损失初始化为 Tensor
-    total_span_loss = torch.tensor(0.0, device=device)
-    total_pair_loss = torch.tensor(0.0, device=device)
-    total_group_loss = torch.tensor(0.0, device=device)
-    total_hateful_loss = torch.tensor(0.0, device=device)
+    # 2. 用 SpanIoUWeightedLoss 计算 Target 的 Span Loss
+    span_iou_loss_fct = SpanIoUWeightedLoss(alpha=0.25, gamma=2.0, reduction="mean")
+    target_span_loss  = span_iou_loss_fct(t_start_logits, t_end_logits, quads_labels_batch, device)
 
-    # ---- 2. Span 抽取 Loss ----
-    # 针对 batch_size，每条样本构造 token-level 真实标签
-    t_start_labels = torch.zeros_like(t_start_logits, device=device)  # [B, L]
-    t_end_labels = torch.zeros_like(t_end_logits, device=device)
-    a_start_labels = torch.zeros_like(a_start_logits, device=device)
-    a_end_labels = torch.zeros_like(a_end_logits, device=device)
+    # or IOU Span:
+    argument_span_loss = span_iou_loss_fct(a_start_logits, a_end_logits, quads_labels_batch, device)
 
-    for b, quads_list in enumerate(quads_labels_batch):
-        for quad in quads_list:
-            ts = quad['t_start_token'].item()
-            te = quad['t_end_token'].item()
-            as_ = quad['a_start_token'].item()
-            ae = quad['a_end_token'].item()
-            if 0 <= ts < seq_len:
-                t_start_labels[b, ts] = 1.0
-            if 0 <= te < seq_len:
-                t_end_labels[b, te] = 1.0
-            if 0 <= as_ < seq_len:
-                a_start_labels[b, as_] = 1.0
-            if 0 <= ae < seq_len:
-                a_end_labels[b, ae] = 1.0
+    total_span_loss = target_span_loss + argument_span_loss
 
-    # 4 项 BCEWithLogitsLoss
-    total_span_loss = (
-            span_loss_fct(t_start_logits, t_start_labels) +
-            span_loss_fct(t_end_logits, t_end_labels) +
-            span_loss_fct(a_start_logits, a_start_labels) +
-            span_loss_fct(a_end_logits, a_end_labels)
-    )
 
     # ---- 3. Biaffine 配对 Loss ----
     # 先在整个 batch 内解码候选 span

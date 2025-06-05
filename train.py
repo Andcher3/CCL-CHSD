@@ -59,9 +59,9 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             model=model,  # 传入模型实例以便在loss_calculator中调用classify_quad
             device=device,
             span_weight=1.0,
-            group_weight=0.0,
-            hateful_weight=0.0,
-            biaffine_weight=0.5
+            group_weight=0.6,
+            hateful_weight=0.8,
+            biaffine_weight=0.8
             # 可以传入权重，例如 span_weight=1.0, group_weight=0.5, hateful_weight=0.5
         )
 
@@ -80,9 +80,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
 
             print(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, "
                   f"Total Loss: {loss.item():.4f} | "
-                  f"Span Loss: {loss_components.get('span_loss', 0.0):.4f} | "  # 使用.get()确保即使组件不存在也不会报错
-                  f"Group Loss: {loss_components.get('group_loss', 0.0):.4f} | "
-                  f"Hateful Loss: {loss_components.get('hateful_loss', 0.0):.4f} | "
+                  f"Span: {loss_components.get('span_loss', 0.0):.4f} | "  # 使用.get()确保即使组件不存在也不会报错
+                  f"Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f} | "
+                  f"Group: {loss_components.get('group_loss', 0.0):.4f} | "
+                  f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "
                   f"Time: {avg_batch_time:.2f}s/batch | Est. Remaining: {remaining_time:.0f}s")
             # 重置计时器，使每次打印的时间更准确反映最近的 batch
             # start_time = time.time() # 如果想统计每10个batch的平均时间，可以取消注释
@@ -107,7 +108,7 @@ def main():
     train_dataset = CHSDDataset(train_features)
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
-    test_features = convert_samples_to_features(processed_test_data)
+    test_features = convert_samples_to_features(processed_train_data)
     test_dataset = CHSDDataset(test_features)
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
@@ -152,6 +153,8 @@ def main():
         # 可以在这里添加验证集的评估、模型保存等逻辑
         if (epoch + 1) % SAVE_EPOCH == 0:
             torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, f"model_epoch_{epoch + 1}.pth"))
+
+        # torch.cuda.empty_cache()
 
     print("\n--- Training Finished ---")
     # 最终模型保存
