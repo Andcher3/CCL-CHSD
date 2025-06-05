@@ -1,8 +1,8 @@
 import json
 import os.path
-
+from sklearn.model_selection import train_test_split
 from Hype import *
-from typing import List, Dict, Any
+from typing import List, Dict, Tuple, Any
 
 
 # 定义函数解析output字符串，提取四元组信息
@@ -51,7 +51,7 @@ def find_positions(content: str, substring: str) -> List[int]:
     return positions
 
 
-def load_data(path: str) -> List[Dict[str, Any]]:
+def load_data(path: str, split_ratio: float = 0.0, random_state: int = 42) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     # used for encode multi-hot code of group
     group_to_index = {g: i for i, g in enumerate(TARGET_GROUP_CLASS_NAME)}
 
@@ -128,21 +128,29 @@ def load_data(path: str) -> List[Dict[str, Any]]:
             'quads': sample_quads
         })
 
-    return processed_data
+    # 根据 split_ratio 进行划分
+    if split_ratio > 0.0:
+        train_data, val_data = train_test_split(processed_data, test_size=split_ratio,
+                                                random_state=random_state)
+        return train_data, val_data
+    else:
+        return processed_data, []  # 不划分，所有数据作为训练集，验证集为空
 
 
 if __name__ == '__main__':
 
     path = os.path.join("data/train.json")
-    processed_data = load_data(path)
+    processed_train_data, processed_test_data = load_data(path, split_ratio=0.3)
 
     # 显示示例（前2条）
-    for item in processed_data:
-        if item['id'] == 7299:
-            print(f"ID: {item['id']}")
-            print(f"Content: {item['content']}")
-            for q in item['quads']:
-                print("  Target:", q['target_text'], "Span:", (q['t_start'], q['t_end']))
-                print("  Argument:", q['argument_text'], "Span:", (q['a_start'], q['a_end']))
-                print("  Group vector:", q['group_vector'], "Hateful:", q['hateful_flag'])
-            print("---")
+    for processed_data in [processed_train_data,processed_test_data]:
+        for item in processed_data:
+            if item['id'] == 7299:
+                print(f"ID: {item['id']}")
+                print(f"Content: {item['content']}")
+                for q in item['quads']:
+                    print("  Target:", q['target_text'], "Span:", (q['t_start'], q['t_end']))
+                    print("  Argument:", q['argument_text'], "Span:", (q['a_start'], q['a_end']))
+                    print("  Group vector:", q['group_vector'], "Hateful:", q['hateful_flag'])
+                print("---")
+

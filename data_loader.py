@@ -118,7 +118,7 @@ if __name__ == '__main__':
     from data_extractor import load_data
 
     path = os.path.join("data/train.json")
-    processed_data = load_data(path)
+    processed_data, _ = load_data(path)
 
     from data_formatter import convert_samples_to_features
 

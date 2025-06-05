@@ -6,12 +6,12 @@ TARGET_GROUP_CLASS_NAME = ['Region', 'Racism', 'Sexism', 'LGBTQ', 'others', 'non
 MAX_SEQ_LENGTH = 128
 
 # span select stradegy
-TOPK_SPAN = 5
+TOPK_SPAN = 8
 MAX_SPAN_LENGTH = 12
 
 # training args
 LR = 2e-5
-BATCH_SIZE = 2
+BATCH_SIZE = 4
 EPOCH = 2
 
 # saving args

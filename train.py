@@ -9,10 +9,10 @@ import time  # 用于记录训练时间
 # 导入你之前定义好的模块
 from Hype import *
 from data_extractor import load_data
-from data_formatter import convert_samples_to_features
+from data_formatter import convert_samples_to_features, tokenizer
 from data_loader import CHSDDataset, collate_fn
 from Model import HateSpeechDetectionModel  # 你的模型
-
+from eval import evaluate_model
 # 导入即将创建的损失计算函数
 from loss import compute_total_loss  # 假设这个函数将在 loss_calculator.py 中定义
 
@@ -58,6 +58,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             quads_labels_batch=quads_labels_batch,
             model=model,  # 传入模型实例以便在loss_calculator中调用classify_quad
             device=device,
+            span_weight=1.0,
+            group_weight=0.0,
+            hateful_weight=0.0,
+            biaffine_weight=0.5
             # 可以传入权重，例如 span_weight=1.0, group_weight=0.5, hateful_weight=0.5
         )
 
@@ -98,11 +102,17 @@ def main():
     # 1. 数据加载与预处理
     print("Loading and preprocessing data...")
     train_path = os.path.join("data", "train.json")
-    processed_train_data = load_data(train_path)
+    processed_train_data, processed_test_data = load_data(train_path, split_ratio=0.3)
     train_features = convert_samples_to_features(processed_train_data)
     train_dataset = CHSDDataset(train_features)
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
+
+    test_features = convert_samples_to_features(processed_test_data)
+    test_dataset = CHSDDataset(test_features)
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
+
     print(f"Training data loaded. {len(train_dataloader)} batches, {len(processed_train_data)} samples.")
+    print(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
 
     # 2. 模型实例化
     print("Initializing model...")
@@ -126,12 +136,22 @@ def main():
 
     # 4. 训练循环
     print("\n--- Starting Training ---")
+    best_avg_f1 = 0
     for epoch in range(EPOCH):
         train_loss = train_epoch(model, train_dataloader, optimizer, scheduler, epoch)
+
+        metrics = evaluate_model(model, test_dataloader, tokenizer, device)
+        print(f"Validation Hard F1: {metrics['hard_f1']:.4f}")
+        print(f"Validation Soft F1: {metrics['soft_f1']:.4f}")
+        print(f"Validation Average F1: {metrics['average_f1']:.4f}")
+
+        if metrics['average_f1'] > best_avg_f1:
+            best_avg_f1 = metrics['average_f1']
+            torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, "best_model.pth"))
+
         # 可以在这里添加验证集的评估、模型保存等逻辑
-        # 例如：
         if (epoch + 1) % SAVE_EPOCH == 0:
-            torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, f"model_epoch_{epoch+1}.pth"))
+            torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, f"model_epoch_{epoch + 1}.pth"))
 
     print("\n--- Training Finished ---")
     # 最终模型保存

@@ -17,7 +17,7 @@ class DummyModel(nn.Module):
         # 仅为 classify_quad 测试定义一个小的分类器
         self.group_classifier = nn.Linear(hidden_size * 3, num_groups)
         self.hateful_classifier = nn.Linear(hidden_size * 3, 1)
-        self.biaffine = BiaffinePairing(hidden_size)
+        self.biaffine_pairing = BiaffinePairing(hidden_size)
 
     def _get_span_representation(self, sequence_output: torch.Tensor,
                                  start_idx: int, end_idx: int, batch_idx: int):

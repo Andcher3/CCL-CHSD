@@ -105,7 +105,7 @@ if __name__ == '__main__':
     from data_extractor import load_data
 
     path = os.path.join("data/train.json")
-    processed_data = load_data(path)
+    processed_data, _ = load_data(path)
 
     # 显示示例（前2条）
     for item in processed_data:
