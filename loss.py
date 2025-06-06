@@ -18,17 +18,17 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
     num_gold_spans_processed = 0
 
     for b in range(batch_size):
-        current_start_logits = start_logits[b] # Shape: [seq_len]
-        current_end_logits = end_logits[b]   # Shape: [seq_len]
+        current_start_logits = start_logits[b]  # Shape: [seq_len]
+        current_end_logits = end_logits[b]  # Shape: [seq_len]
         # gold_spans_batch[b] is a list of dicts, e.g., [{'start': s_val, 'end': e_val}, ...]
         current_gold_spans_info = gold_spans_batch[b]
 
-        if not current_gold_spans_info: # No gold spans for this batch item
+        if not current_gold_spans_info:  # No gold spans for this batch item
             continue
 
         # 1. Generate all candidate spans and their raw scores for this batch item
-        candidate_spans = [] # List of (s, e) tuples
-        candidate_raw_scores = [] # List of corresponding scores
+        candidate_spans = []  # List of (s, e) tuples
+        candidate_raw_scores = []  # List of corresponding scores
         for s_idx in range(seq_len):
             # Ensure e_idx does not exceed seq_len and respects current_max_span_len
             for e_idx in range(s_idx, min(seq_len, s_idx + current_max_span_len)):
@@ -36,14 +36,13 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
                 score = current_start_logits[s_idx] + current_end_logits[e_idx]
                 candidate_raw_scores.append(score)
 
-        if not candidate_spans: # No possible candidate spans generated
+        if not candidate_spans:  # No possible candidate spans generated
             continue
 
         candidate_scores_tensor = torch.tensor(candidate_raw_scores, device=device)
         # Predicted distribution (log probabilities) over all candidate spans for item b
         # Use .float() to ensure tensor is float for log_softmax if scores are int/long
         pred_log_probs = F.log_softmax(candidate_scores_tensor.float(), dim=0)
-
 
         # Iterate over each gold span for the current batch item
         for gold_span_info in current_gold_spans_info:
@@ -58,7 +57,6 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
             if not (0 <= gs < seq_len and 0 <= ge < seq_len and gs <= ge):
                 continue
 
-
             # Check if the gold span is among the candidates
             try:
                 gold_span_candidate_idx = candidate_spans.index((gs, ge))
@@ -69,7 +67,7 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
 
             # 2. Create smoothed target distribution for THIS gold span
             num_candidates = len(candidate_spans)
-            target_dist = torch.zeros(num_candidates, device=device, dtype=torch.float) # Ensure float for kl_div
+            target_dist = torch.zeros(num_candidates, device=device, dtype=torch.float)  # Ensure float for kl_div
 
             neighbors_indices = []
             for i, (cs, ce) in enumerate(candidate_spans):
@@ -77,49 +75,47 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
                     continue
                 # Manhattan distance
                 manhattan_dist = abs(gs - cs) + abs(ge - ce)
-                if manhattan_dist > 0 and manhattan_dist <= D_smooth: # Strictly positive distance
+                if 0 < manhattan_dist <= D_smooth:  # Strictly positive distance
                     neighbors_indices.append(i)
 
-            if not neighbors_indices: # No neighbors within distance D_smooth
+            if not neighbors_indices:  # No neighbors within distance D_smooth
                 target_dist[gold_span_candidate_idx] = 1.0
             else:
                 target_dist[gold_span_candidate_idx] = 1.0 - epsilon
-                if len(neighbors_indices) > 0: # Distribute epsilon only if there are neighbors
+                if len(neighbors_indices) > 0:  # Distribute epsilon only if there are neighbors
                     prob_for_each_neighbor = epsilon / len(neighbors_indices)
                     for neighbor_idx in neighbors_indices:
                         target_dist[neighbor_idx] = prob_for_each_neighbor
 
             # Normalize target_dist to sum to 1, crucial for KL divergence
             current_sum = target_dist.sum()
-            if current_sum > 1e-6: # Avoid division by zero if target_dist is all zeros
+            if current_sum > 1e-6:  # Avoid division by zero if target_dist is all zeros
                 target_dist = target_dist / current_sum
             else:
                 # This case handles when target_dist sums to 0 (e.g. epsilon=1, gold span is its only neighbor)
                 # We should skip loss calculation for this gold span as target is undefined.
                 continue
 
-
             # 3. Calculate KL Divergence loss for this gold span
             # Check for NaNs/Infs before calling kl_div
             if torch.isnan(target_dist).any() or torch.isinf(target_dist).any() or \
-               torch.isnan(pred_log_probs).any() or torch.isinf(pred_log_probs).any():
+                    torch.isnan(pred_log_probs).any() or torch.isinf(pred_log_probs).any():
                 # print(f"Warning: NaN or Inf detected before kl_div for gold span ({gs},{ge}). Skipping.")
                 continue
 
             # Final check on target_dist sum before loss calculation
             if not (0.99 < target_dist.sum().item() < 1.01):
-                 # print(f"Warning: target_dist sum is not 1 before kl_div for gold span ({gs},{ge}). Sum: {target_dist.sum().item()}. Skipping.")
-                 continue
-
+                # print(f"Warning: target_dist sum is not 1 before kl_div for gold span ({gs},{ge}). Sum: {
+                # target_dist.sum().item()}. Skipping.")
+                continue
 
             loss_one_gold_span = F.kl_div(pred_log_probs, target_dist, reduction='sum', log_target=False)
 
             if not torch.isnan(loss_one_gold_span) and not torch.isinf(loss_one_gold_span):
-                 accumulated_loss += loss_one_gold_span
-                 num_gold_spans_processed += 1
+                accumulated_loss += loss_one_gold_span
+                num_gold_spans_processed += 1
             # else:
-                # print(f"Warning: NaN or Inf loss for gold span ({gs},{ge}). Skipping.")
-
+            # print(f"Warning: NaN or Inf loss for gold span ({gs},{ge}). Skipping.")
 
     if num_gold_spans_processed == 0:
         return torch.tensor(0.0, device=device)
@@ -127,10 +123,9 @@ def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq
     return accumulated_loss / num_gold_spans_processed
 
 
-# 损失函数实例
-# pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-# span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
-span_loss_fct = nn.BCEWithLogitsLoss(reduction='none') # reduction='none' 使得我们可以手动加权和求平均
+# 损失函数实例 pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if
+# torch.cuda.is_available() else "cpu")) span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
+span_loss_fct = nn.BCEWithLogitsLoss(reduction='none')  # reduction='none' 使得我们可以手动加权和求平均
 group_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 hateful_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 pair_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
@@ -146,6 +141,7 @@ def _make_arg_start_labels(quads_labels_batch, seq_len, device):
             if 0 <= as_idx < seq_len:
                 labels[b, as_idx] = 1.0
     return labels
+
 
 def _make_arg_end_labels(quads_labels_batch, seq_len, device):
     B = len(quads_labels_batch)
@@ -163,20 +159,19 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
                        quads_labels_batch: List[List[Dict[str, Any]]],
                        model: nn.Module,
                        device: torch.device,
-                       span_weight: float    = 1.0,
-                       group_weight: float   = 0.5,
+                       span_weight: float = 1.0,
+                       group_weight: float = 0.5,
                        hateful_weight: float = 0.5,
-                       biaffine_weight: float= 1.0
+                       biaffine_weight: float = 1.0
                        ) -> (torch.Tensor, Dict[str, float]):
-
     # 1. 从模型输出里拿到各 logits
     # shape: [B, L, 1] → squeeze → [B, L]
-    t_start_logits = outputs['target_start_logits'].squeeze(-1)   # [B, L]
-    t_end_logits   = outputs['target_end_logits'].squeeze(-1)     # [B, L]
-    a_start_logits = outputs['argument_start_logits'].squeeze(-1) # [B, L]
-    a_end_logits   = outputs['argument_end_logits'].squeeze(-1)   # [B, L]
+    t_start_logits = outputs['target_start_logits'].squeeze(-1)  # [B, L]
+    t_end_logits = outputs['target_end_logits'].squeeze(-1)  # [B, L]
+    a_start_logits = outputs['argument_start_logits'].squeeze(-1)  # [B, L]
+    a_end_logits = outputs['argument_end_logits'].squeeze(-1)  # [B, L]
     sequence_output = outputs['sequence_output']  # [B, L, H]
-    cls_output      = outputs['cls_output']       # [B,   H]
+    cls_output = outputs['cls_output']  # [B,   H]
 
     batch_size, seq_len = t_start_logits.size()
 
@@ -250,7 +245,7 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
     gold_target_spans_batch = []
     for b_idx in range(batch_size):
         item_gold_target_spans = []
-        if quads_labels_batch[b_idx]: # Check if there are quads for this item
+        if quads_labels_batch[b_idx]:  # Check if there are quads for this item
             for quad in quads_labels_batch[b_idx]:
                 ts = quad['t_start_token']
                 te = quad['t_end_token']
@@ -265,7 +260,7 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
     gold_argument_spans_batch = []
     for b_idx in range(batch_size):
         item_gold_argument_spans = []
-        if quads_labels_batch[b_idx]: # Check if there are quads for this item
+        if quads_labels_batch[b_idx]:  # Check if there are quads for this item
             for quad in quads_labels_batch[b_idx]:
                 als = quad['a_start_token']
                 ale = quad['a_end_token']

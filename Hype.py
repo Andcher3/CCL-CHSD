@@ -14,7 +14,7 @@ BOUNDARY_SMOOTHING_D = 1
 # training args
 LR = 2e-5
 BATCH_SIZE = 16
-EPOCH = 50
+EPOCH = 70
 
 # saving args
 SAVE_EPOCH = 10

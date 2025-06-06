@@ -167,7 +167,7 @@ def evaluate_model(model: HateSpeechDetectionModel,
                     # 修正：字符串拼接格式统一，使用 ' | '
                     true_quads_for_sample.append(f"{target_text} | {argument_text} | {group_str} | {hateful_str}")
                 test_idx += 1
-                if test_idx >= 20:
+                if test_idx >= 80:
                     print("Predicted Quads for sample:", predicted_quads_for_sample)
                     print("True Quads for sample:", true_quads_for_sample)
                     test_idx = 0
@@ -284,10 +284,6 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
 
     candidate_pairs_scores.sort(key=lambda x: x[0], reverse=True)
 
-    # 简单去重和筛选：确保一个 Span 不会被多次用作最佳匹配
-    used_targets_tokens = set()
-    used_arguments_tokens = set()
-
     # 设定一个预测四元组的最大数量，避免过多无效预测
     MAX_PREDICTED_QUADS_PER_SAMPLE = 5  # 可以根据需要调整
 
@@ -295,11 +291,7 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         ts, te = target_idx_map[i_t]
         as_idx, ae_idx = argument_idx_map[j_a]
 
-        # 检查是否已存在重叠的 Target/Argument
-        # 这里的判断可以更复杂，例如检查是否完全相同的 span
-        # 简单处理：如果起始token已经被用过，就跳过
-        if (ts, te) in used_targets_tokens or (as_idx, ae_idx) in used_arguments_tokens:
-            continue
+        # Logic for skipping based on used_targets_tokens and used_arguments_tokens is removed.
 
         if score > PAIRING_THRESHOLD:  # 优先使用阈值过滤
             final_quad_candidates.append({
@@ -309,21 +301,21 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
                 'a_end_token': ae_idx,
                 'pair_score': score
             })
-            used_targets_tokens.add((ts, te))
-            used_arguments_tokens.add((as_idx, ae_idx))
+            # used_targets_tokens.add((ts, te)) # Removed
+            # used_arguments_tokens.add((as_idx, ae_idx)) # Removed
 
             if len(final_quad_candidates) >= MAX_PREDICTED_QUADS_PER_SAMPLE:
                 break  # 达到最大数量，停止添加
 
-    # 如果通过阈值和去重后仍然没有候选，则强制取最高得分的 K_pair 个（防止完全没有预测）
+    # 如果通过阈值后仍然没有候选，则强制取最高得分的 K_pair 个（防止完全没有预测）
+    # Fallback logic no longer checks used_tokens
     if len(final_quad_candidates) == 0 and candidate_pairs_scores:
-        K_pair_fallback = 1  # 至少预测一个
-        for score, i_t, j_a in candidate_pairs_scores[:K_pair_fallback]:
+        K_pair_fallback = 2  # 至少预测一个, can be adjusted via Hype.py if needed
+        for score, i_t, j_a in candidate_pairs_scores[:K_pair_fallback]:  # Iterate up to K_pair_fallback
             ts, te = target_idx_map[i_t]
             as_idx, ae_idx = argument_idx_map[j_a]
 
-            if (ts, te) in used_targets_tokens or (as_idx, ae_idx) in used_arguments_tokens:
-                continue
+            # (ts, te) in used_targets_tokens or (as_idx, ae_idx) in used_arguments_tokens check removed
 
             final_quad_candidates.append({
                 't_start_token': ts,
@@ -332,10 +324,11 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
                 'a_end_token': ae_idx,
                 'pair_score': score
             })
-            used_targets_tokens.add((ts, te))
-            used_arguments_tokens.add((as_idx, ae_idx))
+            # used_targets_tokens.add((ts, te)) # Removed
+            # used_arguments_tokens.add((as_idx, ae_idx)) # Removed
+            # The MAX_PREDICTED_QUADS_PER_SAMPLE check will be applied after this loop
 
-    # 再次排序并限制最终输出的四元组数量 (可能在去重后顺序打乱)
+    # 再次排序并限制最终输出的四元组数量
     final_quad_candidates.sort(key=lambda x: x['pair_score'], reverse=True)
     final_quad_candidates = final_quad_candidates[:MAX_PREDICTED_QUADS_PER_SAMPLE]  # 再次裁剪
 
