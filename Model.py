@@ -15,14 +15,7 @@ class HateSpeechDetectionModel(nn.Module):
         self.bert = BertModel.from_pretrained(bert_model_name)
         self.hidden_size = self.bert.config.hidden_size  # BERT隐藏层维度
 
-        # --- BiLSTM for Span Representation Enhancement ---
-        self.span_bilstm = nn.LSTM(
-            input_size=self.hidden_size,
-            hidden_size=self.hidden_size // 2, # Output of concatenated BiLSTM will be self.hidden_size
-            num_layers=1,
-            bidirectional=True,
-            batch_first=True
-        )
+        # self.span_bilstm removed for max-pooling based representation
 
         # --- Span Extraction Heads ---
         # 预测Target Span的起始和结束位置
@@ -101,7 +94,7 @@ class HateSpeechDetectionModel(nn.Module):
 
     def _get_span_representation(self, sequence_output: torch.Tensor, start_idx: int, end_idx: int, batch_idx: int):
         """
-        Helper to get span representation using BiLSTM over token embeddings.
+        Helper to get span representation using max-pooling over token embeddings.
         Output dimension will be self.hidden_size.
         """
         # Check for invalid indices or indices out of bounds
@@ -113,34 +106,26 @@ class HateSpeechDetectionModel(nn.Module):
                 end_idx < 0 or end_idx >= seq_len:
             return torch.zeros(self.hidden_size, device=sequence_output.device)
 
-        if start_idx > end_idx:
+        if start_idx > end_idx: # Invalid span order
             return torch.zeros(self.hidden_size, device=sequence_output.device)
 
         # Extract token embeddings for the span
         # Shape: (span_length, bert_hidden_size)
         span_embeddings = sequence_output[batch_idx, start_idx : end_idx + 1, :]
 
-        # Add batch dimension for LSTM: (1, span_length, bert_hidden_size)
-        span_embeddings = span_embeddings.unsqueeze(0)
+        # Check if the span_embeddings tensor is empty (e.g. if start_idx > end_idx resulted in an empty slice,
+        # or if start_idx == end_idx + 1 which means no tokens in span)
+        # span_embeddings.shape[0] would be the span_length.
+        if span_embeddings.shape[0] == 0:
+            return torch.zeros(self.hidden_size, device=sequence_output.device)
 
-        # Pass through BiLSTM
-        # lstm_output: (1, span_length, num_directions * lstm_hidden_size)
-        # h_n: (num_layers * num_directions, 1, lstm_hidden_size)
-        # c_n: (num_layers * num_directions, 1, lstm_hidden_size)
-        lstm_output, (h_n, c_n) = self.span_bilstm(span_embeddings)
+        # Apply max-pooling over the token embeddings within the span.
+        # torch.max returns (values, indices). We only need values.
+        # The pooling is done over dim=0 (the sequence/span_length dimension).
+        # Output shape: (bert_hidden_size)
+        pooled_representation = torch.max(span_embeddings, dim=0)[0]
 
-        # h_n contains the last hidden states for each layer and direction.
-        # For num_layers=1 and bidirectional=True:
-        # h_n[0] is the last hidden state of the forward LSTM (from the first layer)
-        # h_n[1] is the last hidden state of the backward LSTM (from the first layer)
-        # These are for batch_idx=0 of our mini-batch of size 1.
-        # Each is of shape (lstm_hidden_size), which is self.hidden_size // 2.
-        last_forward_hidden = h_n[-2, 0, :] # h_n[0,0,:] if num_layers=1
-        last_backward_hidden = h_n[-1, 0, :]# h_n[1,0,:] if num_layers=1
-
-        # Concatenate the last hidden states of forward and backward LSTM
-        # Output shape: (2 * (self.hidden_size // 2)) = self.hidden_size
-        return torch.cat((last_forward_hidden, last_backward_hidden), dim=-1)
+        return pooled_representation
 
     def classify_quad(self, sequence_output: torch.Tensor, cls_output: torch.Tensor,
                       t_start_token: int, t_end_token: int,
