@@ -10,7 +10,9 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from Model import HateSpeechDetectionModel
-from Hype import MAX_SEQ_LENGTH, TARGET_GROUP_CLASS_NAME, TOPK_SPAN, MAX_SPAN_LENGTH  # 确保这些常量在 Hype.py 中定义
+from Hype import *
+
+test_idx = 0
 
 
 # --- Helper Functions for Soft Match F1 Calculation ---
@@ -55,6 +57,8 @@ def evaluate_model(model: HateSpeechDetectionModel,
     """
     在验证集上评估模型性能，计算硬匹配和软匹配 F1 分数。
     """
+    global test_idx
+
     model.eval()  # 设置模型为评估模式
     all_predicted_quads = []  # 存储所有样本的预测四元组列表
     all_true_quads = []  # 存储所有样本的真实四元组列表
@@ -130,13 +134,13 @@ def evaluate_model(model: HateSpeechDetectionModel,
                     else:
                         target_text = "NULL"
 
-
                     if as_ != -1 and ae != -1 and 0 <= as_ <= ae < real_len:  # 使用 real_len
                         argument_text = tokenizer.decode(
                             ids_i[as_:ae + 1], skip_special_tokens=True, clean_up_tokenization_spaces=False
                         )
 
-                        argument_text = argument_text.replace(" ", "") if argument_text.replace(" ", "") != "" else "NULL"
+                        argument_text = argument_text.replace(" ", "") if argument_text.replace(" ",
+                                                                                                "") != "" else "NULL"
                     else:
                         argument_text = "NULL"
 
@@ -162,9 +166,11 @@ def evaluate_model(model: HateSpeechDetectionModel,
 
                     # 修正：字符串拼接格式统一，使用 ' | '
                     true_quads_for_sample.append(f"{target_text} | {argument_text} | {group_str} | {hateful_str}")
-
-                print("Predicted Quads for sample:", predicted_quads_for_sample)
-                print("True Quads for sample:", true_quads_for_sample)
+                test_idx += 1
+                if test_idx >= 20:
+                    print("Predicted Quads for sample:", predicted_quads_for_sample)
+                    print("True Quads for sample:", true_quads_for_sample)
+                    test_idx = 0
                 all_true_quads.append(true_quads_for_sample)
 
     metrics = calculate_f1_scores(all_predicted_quads, all_true_quads)
@@ -265,9 +271,9 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
 
     pair_logits = model_instance.biaffine_pairing(target_mat, argument_mat)  # [N_t, N_a]
     pair_probs = torch.sigmoid(pair_logits)
-    print("pair_probs:", pair_probs)
+    # print("pair_probs:", pair_probs)
     # 3. 筛选配对: 得分>阈值 或 Top-K
-    pairing_threshold = 0.5
+
     N_t_cand, N_a_cand = pair_probs.size()
 
     candidate_pairs_scores = []
@@ -295,7 +301,7 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         if (ts, te) in used_targets_tokens or (as_idx, ae_idx) in used_arguments_tokens:
             continue
 
-        if score > pairing_threshold:  # 优先使用阈值过滤
+        if score > PAIRING_THRESHOLD:  # 优先使用阈值过滤
             final_quad_candidates.append({
                 't_start_token': ts,
                 't_end_token': te,

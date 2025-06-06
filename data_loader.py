@@ -19,16 +19,10 @@ class CHSDDataset(Dataset):
         attention_mask = feature['attention_mask']
         token_type_ids = feature['token_type_ids']
 
-        # 这里的 labels 需要进行特殊处理，因为一个样本可能有多个四元组。
-        # 对于 Span 抽取，我们通常需要为每个 token 准备一个标签。
-        # 对于分类，我们可能需要一个列表，每个元素对应一个四元组的分类标签。
+        original_content = feature.get('content', '')  # 从 features 获取原始 content
 
-        # 为了简化，我们先假设每个样本只包含一个四元组进行Span抽取和分类的标签准备。
-        # 对于多个四元组，后续在模型中处理匹配和损失计算会更复杂。
-        # 但我们先将所有四元组的标签打包返回，以便模型可以访问。
         quads_labels = []
         for quad in feature['quads']:
-            # 注意：如果 t_start_token/t_end_token 是 None，需要转换成可处理的表示，例如 -1
             t_start = quad['t_start_token'] if quad['t_start_token'] is not None else -1
             t_end = quad['t_end_token'] if quad['t_end_token'] is not None else -1
             a_start = quad['a_start_token'] if quad['a_start_token'] is not None else -1
@@ -39,8 +33,10 @@ class CHSDDataset(Dataset):
                 't_end_token': torch.tensor(t_end, dtype=torch.long),
                 'a_start_token': torch.tensor(a_start, dtype=torch.long),
                 'a_end_token': torch.tensor(a_end, dtype=torch.long),
-                'group_vector': quad['group_vector'],  # 已经是tensor
-                'hateful_flag': quad['hateful_flag']  # 已经是tensor
+                'group_vector': torch.tensor(quad['group_vector'], dtype=torch.float),  # 确保是 tensor
+                'hateful_flag': torch.tensor(quad['hateful_flag'], dtype=torch.long),  # 确保是 tensor
+                'target_text_raw': quad['target_text'],  # 原始 char-level 的 target_text
+                'argument_text_raw': quad['argument_text']  # 原始 char-level 的 argument_text
             })
 
         return {
@@ -48,7 +44,8 @@ class CHSDDataset(Dataset):
             'input_ids': input_ids,
             'attention_mask': attention_mask,
             'token_type_ids': token_type_ids,
-            'quads_labels': quads_labels  # 包含所有四元组的标签
+            'original_content': original_content,  # 返回原始 content 字符串
+            'quads_labels': quads_labels
         }
 
 
@@ -74,42 +71,35 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     # 1. 找到当前批次中最长的序列长度
     max_len = max(len(item['input_ids']) for item in batch)
 
-    # 2. 初始化用于存储批次数据的列表
     batch_input_ids = []
     batch_attention_mask = []
     batch_token_type_ids = []
     batch_ids = []
-    batch_quads_labels = []  # 存储每个样本的 quad 标签列表
+    batch_quads_labels = []
+    batch_original_content = []  # 新增
 
-    # for key in batch[0].keys():
-    #     print(key, batch[0][key])
-    # 3. 遍历批次中的每个样本，进行填充并收集数据
     for item in batch:
-        # 获取当前样本的BERT输入
         input_ids = item['input_ids']
         attention_mask = item['attention_mask']
         token_type_ids = item['token_type_ids']
 
-        # 计算需要填充的长度
         padding_length = max_len - len(input_ids)
 
-        # 进行填充
-        # pad_token_id 通常为0， attention_mask 填充0， token_type_ids 填充0
         batch_input_ids.append(torch.cat([input_ids, torch.tensor([0] * padding_length, dtype=torch.long)]))
         batch_attention_mask.append(torch.cat([attention_mask, torch.tensor([0] * padding_length, dtype=torch.long)]))
         batch_token_type_ids.append(torch.cat([token_type_ids, torch.tensor([0] * padding_length, dtype=torch.long)]))
 
-        # 收集样本ID和四元组标签
         batch_ids.append(item['ids'])
-        batch_quads_labels.append(item['quads_labels'])  # 这里直接收集列表，不做进一步处理
+        batch_quads_labels.append(item['quads_labels'])
+        batch_original_content.append(item['original_content'])  # 新增
 
-    # 4. 将列表堆叠成 PyTorch 张量
     return {
-        'ids': torch.tensor(batch_ids, dtype=torch.long),  # 如果ID只用于记录，也可以不转张量
+        'ids': torch.tensor(batch_ids, dtype=torch.long),
         'input_ids': torch.stack(batch_input_ids),
         'attention_mask': torch.stack(batch_attention_mask),
         'token_type_ids': torch.stack(batch_token_type_ids),
-        'quads_labels': batch_quads_labels  # 这是一个列表的列表，每个内层列表对应一个样本的四元组标签
+        'original_content': batch_original_content,  # 返回字符串列表
+        'quads_labels': batch_quads_labels
     }
 
 

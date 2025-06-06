@@ -61,7 +61,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             span_weight=1.0,
             group_weight=0.6,
             hateful_weight=0.8,
-            biaffine_weight=0.8
+            biaffine_weight=0.4
             # 可以传入权重，例如 span_weight=1.0, group_weight=0.5, hateful_weight=0.5
         )
 
@@ -108,7 +108,7 @@ def main():
     train_dataset = CHSDDataset(train_features)
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn)
 
-    test_features = convert_samples_to_features(processed_train_data)
+    test_features = convert_samples_to_features(processed_test_data)
     test_dataset = CHSDDataset(test_features)
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 

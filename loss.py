@@ -7,8 +7,9 @@ from Hype import *  # 假设 Hype.py 中定义了这两个常量
 import torch.nn.functional as F
 
 # 损失函数实例
-pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
+# pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+# span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
+span_loss_fct = nn.BCEWithLogitsLoss(reduction='none') # reduction='none' 使得我们可以手动加权和求平均
 group_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 hateful_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
 pair_loss_fct = nn.BCEWithLogitsLoss(reduction='mean')
@@ -58,15 +59,146 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
 
     batch_size, seq_len = t_start_logits.size()
 
-    # 2. 用 SpanIoUWeightedLoss 计算 Target 的 Span Loss
-    span_iou_loss_fct = SpanIoUWeightedLoss(alpha=0.25, gamma=2.0, reduction="mean")
-    target_span_loss  = span_iou_loss_fct(t_start_logits, t_end_logits, quads_labels_batch, device)
+    # ---- Span Debug Logging for First Sample in Batch ----
+    # if batch_size > 0:  # Ensure there's at least one sample
+    #     print("\n---- Span Debug for Sample 0 ----")
+    #     # Log True Spans for the first sample (b=0)
+    #     true_target_spans_sample0 = []
+    #     true_argument_spans_sample0 = []
+    #     if quads_labels_batch and quads_labels_batch[0]:
+    #         for quad in quads_labels_batch[0]:
+    #             true_target_spans_sample0.append(
+    #                 (quad['t_start_token'].item(), quad['t_end_token'].item())
+    #             )
+    #             true_argument_spans_sample0.append(
+    #                 (quad['a_start_token'].item(), quad['a_end_token'].item())
+    #             )
+    #     print(f"True Target Spans (Sample 0): {true_target_spans_sample0}")
+    #     print(f"True Argument Spans (Sample 0): {true_argument_spans_sample0}")
+    #
+    #     K_PRED_SPAN = 5
+    #     safe_k_pred_span = min(K_PRED_SPAN, seq_len)  # Ensure k is not larger than seq_len
+    #
+    #     # Log Predicted Top-K Target Spans for the first sample (b=0)
+    #     if safe_k_pred_span > 0:
+    #         t_start_probs_sample0 = torch.sigmoid(t_start_logits[0])
+    #         t_end_probs_sample0 = torch.sigmoid(t_end_logits[0])
+    #
+    #         topk_ts_indices_sample0 = torch.topk(t_start_probs_sample0, k=safe_k_pred_span).indices
+    #         topk_te_indices_sample0 = torch.topk(t_end_probs_sample0, k=safe_k_pred_span).indices
+    #
+    #         pred_target_spans_cand_sample0 = []
+    #         for ts in topk_ts_indices_sample0:
+    #             for te in topk_te_indices_sample0:
+    #                 if ts.item() <= te.item() and (te.item() - ts.item() + 1) <= MAX_SPAN_LENGTH:
+    #                     score = t_start_probs_sample0[ts].item() * t_end_probs_sample0[te].item()
+    #                     pred_target_spans_cand_sample0.append(((ts.item(), te.item()), score))
+    #
+    #         pred_target_spans_cand_sample0.sort(key=lambda x: x[1], reverse=True)
+    #         print(
+    #             f"Predicted Top-{K_PRED_SPAN} Target Spans (Sample 0): {pred_target_spans_cand_sample0[:K_PRED_SPAN]}")
+    #
+    #         # Log Predicted Top-K Argument Spans for the first sample (b=0)
+    #         a_start_probs_sample0 = torch.sigmoid(a_start_logits[0])
+    #         a_end_probs_sample0 = torch.sigmoid(a_end_logits[0])
+    #
+    #         topk_as_indices_sample0 = torch.topk(a_start_probs_sample0, k=safe_k_pred_span).indices
+    #         topk_ae_indices_sample0 = torch.topk(a_end_probs_sample0, k=safe_k_pred_span).indices
+    #
+    #         pred_argument_spans_cand_sample0 = []
+    #         for aus in topk_as_indices_sample0:  # Renamed to aus to avoid clash
+    #             for aue in topk_ae_indices_sample0:  # Renamed to aue
+    #                 if aus.item() <= aue.item() and (aue.item() - aus.item() + 1) <= MAX_SPAN_LENGTH:
+    #                     score = a_start_probs_sample0[aus].item() * a_end_probs_sample0[aue].item()
+    #                     pred_argument_spans_cand_sample0.append(((aus.item(), aue.item()), score))
+    #
+    #         pred_argument_spans_cand_sample0.sort(key=lambda x: x[1], reverse=True)
+    #         print(
+    #             f"Predicted Top-{K_PRED_SPAN} Argument Spans (Sample 0): {pred_argument_spans_cand_sample0[:K_PRED_SPAN]}")
+    #     else:
+    #         print(
+    #             f"Predicted Top-{K_PRED_SPAN} Target Spans (Sample 0): Not enough tokens in sequence to predict {K_PRED_SPAN} spans.")
+    #         print(
+    #             f"Predicted Top-{K_PRED_SPAN} Argument Spans (Sample 0): Not enough tokens in sequence to predict {K_PRED_SPAN} spans.")
+    #
+    #     print("---- End of Span Debug for Sample 0 ----\n")
+    # ---- End of Span Debug Logging ----
+    def iou_span_loss():
+        # 2. 用 SpanIoUWeightedLoss 计算 Target 的 Span Loss
+        target_span_loss_fct = SpanIoUWeightedLoss(alpha=0.1, gamma=2.0, reduction="mean", span_type="target")
+        argument_span_loss_fct = SpanIoUWeightedLoss(alpha=0.1, gamma=2.0, reduction="mean", span_type="argument")
 
-    # or IOU Span:
-    argument_span_loss = span_iou_loss_fct(a_start_logits, a_end_logits, quads_labels_batch, device)
+        target_span_loss = target_span_loss_fct(t_start_logits, t_end_logits, quads_labels_batch, device)
+        argument_span_loss = argument_span_loss_fct(a_start_logits, a_end_logits, quads_labels_batch, device)
 
-    total_span_loss = target_span_loss + argument_span_loss
+        total_span_loss = target_span_loss + argument_span_loss
+    def bce_span_loss():
+        # ---- 2. Span 抽取 Loss (使用 BCEWithLogitsLoss + 动态 pos_weight) ----
+        # 构造 token-level 真实标签
+        t_start_labels = torch.zeros((batch_size, seq_len), device=device)
+        t_end_labels = torch.zeros((batch_size, seq_len), device=device)
+        a_start_labels = torch.zeros((batch_size, seq_len), device=device)
+        a_end_labels = torch.zeros((batch_size, seq_len), device=device)
 
+        for b, quads_list in enumerate(quads_labels_batch):
+            for quad in quads_list:
+                ts = quad['t_start_token'].item()
+                te = quad['t_end_token'].item()
+                as_ = quad['a_start_token'].item()
+                ae = quad['a_end_token'].item()
+
+                # 为所有有效的 Span 起点/终点设置标签 1.0
+                if 0 <= ts < seq_len:
+                    t_start_labels[b, ts] = 1.0
+                if 0 <= te < seq_len:
+                    t_end_labels[b, te] = 1.0
+                if 0 <= as_ < seq_len:
+                    a_start_labels[b, as_] = 1.0
+                if 0 <= ae < seq_len:
+                    a_end_labels[b, ae] = 1.0
+
+        # 动态计算 pos_weight (负样本数 / 正样本数)
+        # 针对 Target Start
+        pos_count_ts = t_start_labels.sum(dim=1)  # [B]
+        neg_count_ts = seq_len - pos_count_ts
+        pos_weight_ts = torch.where(pos_count_ts > 0, neg_count_ts / (pos_count_ts + 1e-5),
+                                    torch.tensor(1.0, device=device))
+        pos_weight_ts = pos_weight_ts.unsqueeze(-1).expand_as(t_start_logits)  # [B, L]
+
+        # 针对 Target End
+        pos_count_te = t_end_labels.sum(dim=1)
+        neg_count_te = seq_len - pos_count_te
+        pos_weight_te = torch.where(pos_count_te > 0, neg_count_te / (pos_count_te + 1e-5),
+                                    torch.tensor(1.0, device=device))
+        pos_weight_te = pos_weight_te.unsqueeze(-1).expand_as(t_end_logits)
+
+        # 针对 Argument Start
+        pos_count_as = a_start_labels.sum(dim=1)
+        neg_count_as = seq_len - pos_count_as
+        pos_weight_as = torch.where(pos_count_as > 0, neg_count_as / (pos_count_as + 1e-5),
+                                    torch.tensor(1.0, device=device))
+        pos_weight_as = pos_weight_as.unsqueeze(-1).expand_as(a_start_logits)
+
+        # 针对 Argument End
+        pos_count_ae = a_end_labels.sum(dim=1)
+        neg_count_ae = seq_len - pos_count_ae
+        pos_weight_ae = torch.where(pos_count_ae > 0, neg_count_ae / (pos_count_ae + 1e-5),
+                                    torch.tensor(1.0, device=device))
+        pos_weight_ae = pos_weight_ae.unsqueeze(-1).expand_as(a_end_logits)
+        span_loss_ts = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_ts)
+        span_loss_te = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_te)
+        span_loss_as = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_as)
+        span_loss_ae = nn.BCEWithLogitsLoss(reduction='none', pos_weight=pos_weight_ae)
+
+        # 计算损失并求平均 (reduction='none' 后手动求 mean)
+        total_span_loss = (
+                (span_loss_ts(t_start_logits, t_start_labels)).mean() +
+                (span_loss_te(t_end_logits, t_end_labels)).mean() +
+                (span_loss_as(a_start_logits, a_start_labels)).mean() +
+                (span_loss_ae(a_end_logits, a_end_labels)).mean()
+        )
+        return total_span_loss
+    total_span_loss = bce_span_loss()
 
     # ---- 3. Biaffine 配对 Loss ----
     # 先在整个 batch 内解码候选 span
@@ -105,6 +237,10 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
     # 从 sequence_output 中提取所有候选 span 的向量
     N_t = len(all_target_spans)
     N_a = len(all_argument_spans)
+    # FOR TEST
+    # print(f"N_t (number of candidate target spans): {N_t}")
+    # print(f"N_a (number of candidate argument spans): {N_a}")
+    # FOR TEST
     if N_t > 0 and N_a > 0:
         tgt_vecs = []
         for (b, ts, te) in all_target_spans:
@@ -132,6 +268,30 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
                                 quad['a_start_token'] == as_ and quad['a_end_token'] == ae):
                             gold_pair_labels[i_idx, j_idx] = 1.0
                             break
+
+        # print(f"Number of positive gold pairs: {torch.sum(gold_pair_labels).item()}")
+
+        # =================FOR TEST===========================================
+        # true_quads_found_in_candidates = 0
+        # total_true_quads = 0
+        # for b, quads_list in enumerate(quads_labels_batch):
+        #     total_true_quads += len(quads_list)
+        #     for quad in quads_list:
+        #         true_ts, true_te = quad['t_start_token'].item(), quad['t_end_token'].item()
+        #         true_as, true_ae = quad['a_start_token'].item(), quad['a_end_token'].item()
+        #
+        #         is_target_found = any(
+        #             cand_b == b and cand_ts == true_ts and cand_te == true_te for cand_b, cand_ts, cand_te in
+        #             all_target_spans)
+        #         is_argument_found = any(
+        #             cand_b == b and cand_as == true_as and cand_ae == true_ae for cand_b, cand_as, cand_ae in
+        #             all_argument_spans)
+        #
+        #         if is_target_found and is_argument_found:
+        #             true_quads_found_in_candidates += 1
+        # print(f"True quads found in candidates: {true_quads_found_in_candidates}")
+        # print(f"Total true quads in batch: {total_true_quads}")
+        # =================FOR TEST===========================================
 
         # 计算 BCEWithLogitsLoss
         total_pair_loss = pair_loss_fct(pair_logits, gold_pair_labels)

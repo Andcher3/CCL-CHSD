@@ -11,16 +11,18 @@ class SpanIoUWeightedLoss(nn.Module):
     我们对“token i 是正例 start” 或 “token j 是正例 end” 做二分类，
     对那些“负样本 token 与任意正例 span 有较大 overlap”的位置加大权重。
     """
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction="mean"):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction="mean", span_type: str = "target"):
         """
         alpha: 正例 vs 负例的基准平衡因子。通常 0.1~0.25 左右。
         gamma: Focal 中调节“难易”程度的参数。这里也可用做平滑指数。
+        span_type: "target" or "argument", to determine which keys to use from quads_labels.
         reduction: 'mean' 或 'sum' 用于最终返回标量。
         """
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.reduction = reduction
+        self.span_type = span_type
 
     def forward(self,
                 start_logits: torch.Tensor,  # [B, L]
@@ -39,19 +41,24 @@ class SpanIoUWeightedLoss(nn.Module):
         start_labels = torch.zeros((B, L), device=device)
         end_labels   = torch.zeros((B, L), device=device)
         # 记录 gold spans 列表，便于后续 IoU 计算
-        gold_spans_start = [[] for _ in range(B)]
-        gold_spans_end   = [[] for _ in range(B)]  # 只是帮我们找正例区域
+        gold_spans_for_iou = [[] for _ in range(B)] # Renamed from gold_spans_start
 
         for b, quads_list in enumerate(quads_labels):
             for quad in quads_list:
-                ts, te = quad['t_start_token'].item(), quad['t_end_token'].item()
-                if 0 <= ts < L:
-                    start_labels[b, ts] = 1.0
-                if 0 <= te < L:
-                    end_labels[b, te] = 1.0
+                if self.span_type == "target":
+                    s, e = quad['t_start_token'].item(), quad['t_end_token'].item()
+                elif self.span_type == "argument":
+                    s, e = quad['a_start_token'].item(), quad['a_end_token'].item()
+                else:
+                    raise ValueError(f"Invalid span_type: {self.span_type} in SpanIoUWeightedLoss")
+
+                if 0 <= s < L:
+                    start_labels[b, s] = 1.0
+                if 0 <= e < L:
+                    end_labels[b, e] = 1.0
                 # 记录 gold span 对（后面算 IoU 用）
-                if 0 <= ts <= te < L:
-                    gold_spans_start[b].append((ts, te))
+                if 0 <= s <= e < L: # Use s, e based on span_type
+                    gold_spans_for_iou[b].append((s, e))
 
         # 1. 计算 token-level 基础 BCEWithLogitsLoss
         bce_loss_start = F.binary_cross_entropy_with_logits(start_logits, start_labels, reduction="none")
@@ -66,17 +73,17 @@ class SpanIoUWeightedLoss(nn.Module):
         #                      = alpha * (1 + maxIoU(i))^gamma   otherwise
         weight_start = torch.zeros((B, L), device=device)
         for b in range(B):
-            spans = gold_spans_start[b]  # 该样本的所有 gold span (ts, te)
+            spans = gold_spans_for_iou[b]  # 该样本的所有 gold span (s, e)
             for i in range(L):
                 if start_labels[b, i] == 1:  # 正例
                     weight_start[b, i] = (1 - self.alpha)
                 else:  # 负例 token，需要算 IoU
                     max_iou_i = 0.0
-                    for (ts, te) in spans:
+                    for (s_gold, e_gold) in spans: # Use s_gold, e_gold from gold_spans_for_iou
                         # 这里 i 视作“span (i,i) 只含一个 token”
-                        inter = 1 if (ts <= i <= te) else 0
-                        # span_len_gold = te - ts + 1, span_len_pred = 1
-                        union = (te - ts + 1) + 1 - inter
+                        inter = 1 if (s_gold <= i <= e_gold) else 0
+                        # span_len_gold = e_gold - s_gold + 1, span_len_pred = 1
+                        union = (e_gold - s_gold + 1) + 1 - inter
                         iou_i = inter / union if union > 0 else 0.0
                         if iou_i > max_iou_i:
                             max_iou_i = iou_i
@@ -85,16 +92,16 @@ class SpanIoUWeightedLoss(nn.Module):
         # 3. end 部分同理
         weight_end = torch.zeros((B, L), device=device)
         for b in range(B):
-            spans = gold_spans_start[b]  # 此处仍然用 Target 的 span 来计算 end token 与 span 的 IoU
+            spans = gold_spans_for_iou[b]  # Use gold_spans_for_iou, which is specific to target/argument
             for j in range(L):
                 if end_labels[b, j] == 1:
                     weight_end[b, j] = (1 - self.alpha)
                 else:
                     max_iou_j = 0.0
-                    for (ts, te) in spans:
+                    for (s_gold, e_gold) in spans: # Use s_gold, e_gold
                         # 这里 j 视作“span (j,j)”
-                        inter = 1 if (ts <= j <= te) else 0
-                        union = (te - ts + 1) + 1 - inter
+                        inter = 1 if (s_gold <= j <= e_gold) else 0
+                        union = (e_gold - s_gold + 1) + 1 - inter
                         iou_j = inter / union if union > 0 else 0.0
                         if iou_j > max_iou_j:
                             max_iou_j = iou_j

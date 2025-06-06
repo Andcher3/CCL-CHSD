@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 from transformers import BertModel
-from Biaffine import BiaffinePairing # 导入Biaffine模块
+from Biaffine import BiaffinePairing  # 导入Biaffine模块
 from typing import List, Dict, Any
 
 # 假设 Hype.py 已经导入，并且 TARGET_GROUP_CLASS_NAME 和 MAX_SEQ_LENGTH 已定义
@@ -25,16 +25,16 @@ class HateSpeechDetectionModel(nn.Module):
         self.argument_end_head = nn.Linear(self.hidden_size, 1)
 
         # Biaffine Pairing Layer
-        self.biaffine_pairing = BiaffinePairing(self.hidden_size)  # 实例化Biaffine层
+        # Span representations are now self.hidden_size * 2 (concatenated start/end embeddings)
+        self.biaffine_pairing = BiaffinePairing(input_dim=self.hidden_size * 2)
 
         # --- Classification Heads ---
-        # 输入维度将是 Target_vector + Argument_vector + CLS_vector
-        # 假设每个 vector 维度为 hidden_size
-        classification_input_dim = self.hidden_size * 3
+        # Input: Target_vec (H*2) + Argument_vec (H*2) + CLS_vec (H) = H*5
+        classification_input_dim = (self.hidden_size * 2) + (self.hidden_size * 2) + self.hidden_size
 
         # Targeted Group分类头
         self.group_classifier = nn.Sequential(
-            nn.Linear(classification_input_dim, self.hidden_size),
+            nn.Linear(classification_input_dim, self.hidden_size),  # Adjusted input_dim
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(self.hidden_size, len(TARGET_GROUP_CLASS_NAME))
@@ -42,7 +42,7 @@ class HateSpeechDetectionModel(nn.Module):
 
         # Hateful分类头
         self.hateful_classifier = nn.Sequential(
-            nn.Linear(classification_input_dim, self.hidden_size // 2),
+            nn.Linear(classification_input_dim, self.hidden_size // 2),  # Adjusted input_dim
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(self.hidden_size // 2, 1)
@@ -92,23 +92,26 @@ class HateSpeechDetectionModel(nn.Module):
 
     def _get_span_representation(self, sequence_output: torch.Tensor, start_idx: int, end_idx: int, batch_idx: int):
         """
-        Helper to get span representation by averaging token embeddings within the span.
-        Note: This is a simplified approach. More complex methods exist.
+        Helper to get span representation by concatenating start and end token embeddings.
         """
-        # Ensure indices are valid and within sequence length
-        if start_idx is None or end_idx is None or start_idx == -1 or end_idx == -1:
-            return torch.zeros(self.hidden_size, device=sequence_output.device)  # Return zero vector for invalid spans
+        # Check for invalid indices or indices out of bounds
+        if start_idx is None or end_idx is None or \
+                start_idx == -1 or end_idx == -1 or \
+                batch_idx < 0 or batch_idx >= sequence_output.shape[0] or \
+                start_idx < 0 or start_idx >= sequence_output.shape[1] or \
+                end_idx < 0 or end_idx >= sequence_output.shape[1]:
+            return torch.zeros(self.hidden_size * 2, device=sequence_output.device)
 
-        # Clamp indices to ensure they are within the sequence_output boundaries
-        seq_len = sequence_output.shape[1]
-        start_idx = max(0, start_idx)
-        end_idx = min(seq_len - 1, end_idx)
+        # If start_idx > end_idx, it's an invalid span according to typical definitions.
+        if start_idx > end_idx:
+            return torch.zeros(self.hidden_size * 2, device=sequence_output.device)
 
-        if start_idx > end_idx:  # Invalid span if start > end after clamping
-            return torch.zeros(self.hidden_size, device=sequence_output.device)
+        start_embedding = sequence_output[batch_idx, start_idx]
+        end_embedding = sequence_output[batch_idx, end_idx]
 
-        span_tokens = sequence_output[batch_idx, start_idx: end_idx + 1]
-        return torch.mean(span_tokens, dim=0)  # Average pooling
+        # Concatenate start and end token embeddings.
+        # If start_idx == end_idx (span of length 1), it concatenates the embedding with itself.
+        return torch.cat((start_embedding, end_embedding), dim=-1)
 
     def classify_quad(self, sequence_output: torch.Tensor, cls_output: torch.Tensor,
                       t_start_token: int, t_end_token: int,
