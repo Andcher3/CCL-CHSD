@@ -8,6 +8,8 @@ MAX_SEQ_LENGTH = 128
 # span select stradegy
 TOPK_SPAN = 8
 MAX_SPAN_LENGTH = 15
+BOUNDARY_SMOOTHING_EPSILON = 0.1
+BOUNDARY_SMOOTHING_D = 1
 
 # training args
 LR = 2e-5
