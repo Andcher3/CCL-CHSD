@@ -22,6 +22,7 @@ MODEL_SAVE_PATH = "results/model"
 
 # eval related
 PAIRING_THRESHOLD = 0.5
+NMS_IOU_THRESHOLD = 0.7 # For Non-Maximal Suppression in eval
 
 if __name__ == '__main__':
     import torch

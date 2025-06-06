@@ -15,6 +15,15 @@ class HateSpeechDetectionModel(nn.Module):
         self.bert = BertModel.from_pretrained(bert_model_name)
         self.hidden_size = self.bert.config.hidden_size  # BERT隐藏层维度
 
+        # --- BiLSTM for Span Representation Enhancement ---
+        self.span_bilstm = nn.LSTM(
+            input_size=self.hidden_size,
+            hidden_size=self.hidden_size // 2, # Output of concatenated BiLSTM will be self.hidden_size
+            num_layers=1,
+            bidirectional=True,
+            batch_first=True
+        )
+
         # --- Span Extraction Heads ---
         # 预测Target Span的起始和结束位置
         self.target_start_head = nn.Linear(self.hidden_size, 1)
@@ -25,16 +34,16 @@ class HateSpeechDetectionModel(nn.Module):
         self.argument_end_head = nn.Linear(self.hidden_size, 1)
 
         # Biaffine Pairing Layer
-        # Span representations are now self.hidden_size * 2 (concatenated start/end embeddings)
-        self.biaffine_pairing = BiaffinePairing(input_dim=self.hidden_size * 2)
+        # Span representations are now self.hidden_size (output of BiLSTM)
+        self.biaffine_pairing = BiaffinePairing(input_dim=self.hidden_size)
 
         # --- Classification Heads ---
-        # Input: Target_vec (H*2) + Argument_vec (H*2) + CLS_vec (H) = H*5
-        classification_input_dim = (self.hidden_size * 2) + (self.hidden_size * 2) + self.hidden_size
+        # Input: Target_vec (H) + Argument_vec (H) + CLS_vec (H) = H*3
+        classification_input_dim = self.hidden_size * 3
 
         # Targeted Group分类头
         self.group_classifier = nn.Sequential(
-            nn.Linear(classification_input_dim, self.hidden_size),  # Adjusted input_dim
+            nn.Linear(classification_input_dim, self.hidden_size),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(self.hidden_size, len(TARGET_GROUP_CLASS_NAME))
@@ -42,7 +51,7 @@ class HateSpeechDetectionModel(nn.Module):
 
         # Hateful分类头
         self.hateful_classifier = nn.Sequential(
-            nn.Linear(classification_input_dim, self.hidden_size // 2),  # Adjusted input_dim
+            nn.Linear(classification_input_dim, self.hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(self.hidden_size // 2, 1)
@@ -92,26 +101,46 @@ class HateSpeechDetectionModel(nn.Module):
 
     def _get_span_representation(self, sequence_output: torch.Tensor, start_idx: int, end_idx: int, batch_idx: int):
         """
-        Helper to get span representation by concatenating start and end token embeddings.
+        Helper to get span representation using BiLSTM over token embeddings.
+        Output dimension will be self.hidden_size.
         """
         # Check for invalid indices or indices out of bounds
+        seq_len = sequence_output.shape[1]
         if start_idx is None or end_idx is None or \
                 start_idx == -1 or end_idx == -1 or \
                 batch_idx < 0 or batch_idx >= sequence_output.shape[0] or \
-                start_idx < 0 or start_idx >= sequence_output.shape[1] or \
-                end_idx < 0 or end_idx >= sequence_output.shape[1]:
-            return torch.zeros(self.hidden_size * 2, device=sequence_output.device)
+                start_idx < 0 or start_idx >= seq_len or \
+                end_idx < 0 or end_idx >= seq_len:
+            return torch.zeros(self.hidden_size, device=sequence_output.device)
 
-        # If start_idx > end_idx, it's an invalid span according to typical definitions.
         if start_idx > end_idx:
-            return torch.zeros(self.hidden_size * 2, device=sequence_output.device)
+            return torch.zeros(self.hidden_size, device=sequence_output.device)
 
-        start_embedding = sequence_output[batch_idx, start_idx]
-        end_embedding = sequence_output[batch_idx, end_idx]
+        # Extract token embeddings for the span
+        # Shape: (span_length, bert_hidden_size)
+        span_embeddings = sequence_output[batch_idx, start_idx : end_idx + 1, :]
 
-        # Concatenate start and end token embeddings.
-        # If start_idx == end_idx (span of length 1), it concatenates the embedding with itself.
-        return torch.cat((start_embedding, end_embedding), dim=-1)
+        # Add batch dimension for LSTM: (1, span_length, bert_hidden_size)
+        span_embeddings = span_embeddings.unsqueeze(0)
+
+        # Pass through BiLSTM
+        # lstm_output: (1, span_length, num_directions * lstm_hidden_size)
+        # h_n: (num_layers * num_directions, 1, lstm_hidden_size)
+        # c_n: (num_layers * num_directions, 1, lstm_hidden_size)
+        lstm_output, (h_n, c_n) = self.span_bilstm(span_embeddings)
+
+        # h_n contains the last hidden states for each layer and direction.
+        # For num_layers=1 and bidirectional=True:
+        # h_n[0] is the last hidden state of the forward LSTM (from the first layer)
+        # h_n[1] is the last hidden state of the backward LSTM (from the first layer)
+        # These are for batch_idx=0 of our mini-batch of size 1.
+        # Each is of shape (lstm_hidden_size), which is self.hidden_size // 2.
+        last_forward_hidden = h_n[-2, 0, :] # h_n[0,0,:] if num_layers=1
+        last_backward_hidden = h_n[-1, 0, :]# h_n[1,0,:] if num_layers=1
+
+        # Concatenate the last hidden states of forward and backward LSTM
+        # Output shape: (2 * (self.hidden_size // 2)) = self.hidden_size
+        return torch.cat((last_forward_hidden, last_backward_hidden), dim=-1)
 
     def classify_quad(self, sequence_output: torch.Tensor, cls_output: torch.Tensor,
                       t_start_token: int, t_end_token: int,
