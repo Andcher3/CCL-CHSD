@@ -10,9 +10,36 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from Model import HateSpeechDetectionModel
-from Hype import *
+from Hype import * # NMS_IOU_THRESHOLD will be imported from here
 
 test_idx = 0
+
+def calculate_span_iou(span1: Tuple[int, int], span2: Tuple[int, int]) -> float:
+    """Calculates Intersection over Union (IoU) for two 1D spans (start, end)."""
+    s1, e1 = span1
+    s2, e2 = span2
+
+    intersection_start = max(s1, s2)
+    intersection_end = min(e1, e2)
+
+    intersection_length = max(0, intersection_end - intersection_start + 1)
+    if intersection_length == 0:
+        return 0.0
+
+    span1_length = e1 - s1 + 1
+    span2_length = e2 - s2 + 1
+
+    union_length = span1_length + span2_length - intersection_length
+    if union_length == 0: # Should not happen if intersection_length > 0 and spans are valid
+        # This case can happen if both spans are length 0 and overlap, though len 0 spans are unusual.
+        # Or if spans are invalid (e.g. s > e after some manipulation, though input should be s <= e)
+        # For robustness, if union is zero and intersection was also zero, IoU is 0.
+        # If somehow intersection > 0 but union is 0, this indicates an issue, but returning 0 is safe.
+        return 0.0
+
+    iou = intersection_length / union_length
+    return iou
+
 
 
 # --- Helper Functions for Soft Match F1 Calculation ---
@@ -287,50 +314,64 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
     # 设定一个预测四元组的最大数量，避免过多无效预测
     MAX_PREDICTED_QUADS_PER_SAMPLE = 5  # 可以根据需要调整
 
-    for score, i_t, j_a in candidate_pairs_scores:
-        ts, te = target_idx_map[i_t]
-        as_idx, ae_idx = argument_idx_map[j_a]
-
-        # Logic for skipping based on used_targets_tokens and used_arguments_tokens is removed.
-
-        if score > PAIRING_THRESHOLD:  # 优先使用阈值过滤
-            final_quad_candidates.append({
-                't_start_token': ts,
-                't_end_token': te,
-                'a_start_token': as_idx,
-                'a_end_token': ae_idx,
-                'pair_score': score
-            })
-            # used_targets_tokens.add((ts, te)) # Removed
-            # used_arguments_tokens.add((as_idx, ae_idx)) # Removed
-
-            if len(final_quad_candidates) >= MAX_PREDICTED_QUADS_PER_SAMPLE:
-                break  # 达到最大数量，停止添加
-
-    # 如果通过阈值后仍然没有候选，则强制取最高得分的 K_pair 个（防止完全没有预测）
-    # Fallback logic no longer checks used_tokens
-    if len(final_quad_candidates) == 0 and candidate_pairs_scores:
-        K_pair_fallback = 1  # 至少预测一个, can be adjusted via Hype.py if needed
-        for score, i_t, j_a in candidate_pairs_scores[:K_pair_fallback]: # Iterate up to K_pair_fallback
+    # Step A: Populate initial_quad_candidates using PAIRING_THRESHOLD
+    initial_quad_candidates = []
+    for score, i_t, j_a in candidate_pairs_scores: # Already sorted by score
+        if score > PAIRING_THRESHOLD:
             ts, te = target_idx_map[i_t]
             as_idx, ae_idx = argument_idx_map[j_a]
-
-            # (ts, te) in used_targets_tokens or (as_idx, ae_idx) in used_arguments_tokens check removed
-
-            final_quad_candidates.append({
-                't_start_token': ts,
-                't_end_token': te,
-                'a_start_token': as_idx,
-                'a_end_token': ae_idx,
+            initial_quad_candidates.append({
+                't_start_token': ts, 't_end_token': te,
+                'a_start_token': as_idx, 'a_end_token': ae_idx,
                 'pair_score': score
             })
-            # used_targets_tokens.add((ts, te)) # Removed
-            # used_arguments_tokens.add((as_idx, ae_idx)) # Removed
-            # The MAX_PREDICTED_QUADS_PER_SAMPLE check will be applied after this loop
 
-    # 再次排序并限制最终输出的四元组数量
+    # Step B: If initial_quad_candidates is empty, apply fallback
+    if not initial_quad_candidates and candidate_pairs_scores:
+        K_pair_fallback = 1 # Predict at least one if possible
+        # Fallback candidates also need to be in the same format
+        for score, i_t, j_a in candidate_pairs_scores[:K_pair_fallback]:
+            ts, te = target_idx_map[i_t]
+            as_idx, ae_idx = argument_idx_map[j_a]
+            initial_quad_candidates.append({
+                't_start_token': ts, 't_end_token': te,
+                'a_start_token': as_idx, 'a_end_token': ae_idx,
+                'pair_score': score
+            })
+
+    # Step C: Apply NMS to initial_quad_candidates
+    # NMS requires candidates to be sorted by score, which initial_quad_candidates already is
+    # (either from thresholding sorted candidate_pairs_scores or by taking top K from it)
+    final_quad_candidates_after_nms = []
+    if initial_quad_candidates:
+        # Ensure sorting by score just in case fallback changed order (though it shouldn't here)
+        initial_quad_candidates.sort(key=lambda x: x['pair_score'], reverse=True)
+
+        for cand_idx, current_cand in enumerate(initial_quad_candidates):
+            is_suppressed = False
+            current_target_span = (current_cand['t_start_token'], current_cand['t_end_token'])
+            current_argument_span = (current_cand['a_start_token'], current_cand['a_end_token'])
+
+            for kept_cand in final_quad_candidates_after_nms:
+                kept_target_span = (kept_cand['t_start_token'], kept_cand['t_end_token'])
+                kept_argument_span = (kept_cand['a_start_token'], kept_cand['a_end_token'])
+
+                target_iou = calculate_span_iou(current_target_span, kept_target_span)
+                argument_iou = calculate_span_iou(current_argument_span, kept_argument_span)
+
+                # If both target and argument spans significantly overlap, suppress
+                if target_iou > NMS_IOU_THRESHOLD and argument_iou > NMS_IOU_THRESHOLD:
+                    is_suppressed = True
+                    break
+
+            if not is_suppressed:
+                final_quad_candidates_after_nms.append(current_cand)
+
+    final_quad_candidates = final_quad_candidates_after_nms
+
+    # Step E & F: Sort again (NMS might not preserve order if scores were identical) and limit
     final_quad_candidates.sort(key=lambda x: x['pair_score'], reverse=True)
-    final_quad_candidates = final_quad_candidates[:MAX_PREDICTED_QUADS_PER_SAMPLE]  # 再次裁剪
+    final_quad_candidates = final_quad_candidates[:MAX_PREDICTED_QUADS_PER_SAMPLE]
 
     # 4. 分类并输出成字符串
     ids = sample_input_ids.squeeze(0)  # [L]
