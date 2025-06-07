@@ -475,9 +475,9 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
 
     # Fallback: If NMS (and thresholding) yields no candidates, consider taking the single best pre-NMS pair.
     # This is a simplified fallback. A more robust one might re-run NMS on top-K pre-threshold pairs.
-    if not final_quad_candidates and candidate_pairs_scores: # candidate_pairs_scores is from before any filtering
-         # candidate_pairs_scores was: list of (score, i_t, j_a), sorted by score
-         # This part is tricky because candidate_pairs_scores was defined in the old version.
+    # Condition changed to check if target_vecs and argument_vecs were populated,
+    # implying that pair_probs could be computed.
+    if not final_quad_candidates and (target_vecs and argument_vecs):
          # Let's rebuild a simplified version of candidate_pairs_scores for the fallback.
          all_possible_pairs_for_fallback = []
          if not candidate_target_spans or not candidate_argument_spans: # Should have been caught earlier
