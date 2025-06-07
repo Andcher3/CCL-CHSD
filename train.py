@@ -58,11 +58,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             quads_labels_batch=quads_labels_batch,
             model=model,  # 传入模型实例以便在loss_calculator中调用classify_quad
             device=device,
-            span_weight=1.0,
-            group_weight=0.6,
-            hateful_weight=0.8,
-            biaffine_weight=0.4
-            # 可以传入权重，例如 span_weight=1.0, group_weight=0.5, hateful_weight=0.5
+            span_weight=1.0,      # Updated
+            biaffine_weight=0.8,  # Updated
+            group_weight=0.5,     # Updated
+            hateful_weight=0.7    # Updated
         )
 
         # 3. 反向传播与参数更新
