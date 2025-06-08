@@ -40,6 +40,10 @@ NMS_CONTAINMENT_THRESHOLD = 0.85  # Min portion of one span covered by another t
 NON_HATE_DETERMINATION_MARGIN = 0.1  # How much higher combined_score_non_hate needs to be
 MIN_SPECIFIC_HATE_GROUP_THRESHOLD = 0.4  # Min probability for a specific hate group to be included if combined_score_hate is dominant
 
+# --- Diversity Loss Configuration ---
+ENABLE_DIVERSITY_LOSS = True  # Master switch for the diversity loss
+DIVERSITY_LOSS_WEIGHT = 0.1   # Weight for the diversity loss component
+
 if __name__ == '__main__':
     import torch
     print(torch.cuda.is_available())
