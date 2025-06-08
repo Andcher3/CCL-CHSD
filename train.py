@@ -80,7 +80,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
 
             print(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, "
                   f"Total Loss: {loss.item():.4f} | "
-                  f"Span: {loss_components.get('span_loss', 0.0):.4f} | "  # 使用.get()确保即使组件不存在也不会报错
+                  f"IOU/KL Span: {loss_components.get('iou_span_loss', 0.0):.4f}/{loss_components.get('kl_span_loss', 0.0):.3f} | "  # 使用.get()确保即使组件不存在也不会报错
                   f"Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f} | "
                   f"Group: {loss_components.get('group_loss', 0.0):.4f} | "
                   f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "

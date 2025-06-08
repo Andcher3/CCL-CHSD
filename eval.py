@@ -107,6 +107,9 @@ def evaluate_model(model: HateSpeechDetectionModel,
                     MAX_SEQ_LENGTH,
                     model  # 传入模型实例以便调用 Biaffine 和 classify_quad
                 )
+                if test_idx >= 80:
+                    print("Predicted Quads for sample len:", len(predicted_quads_for_sample))
+
                 all_predicted_quads.append(predicted_quads_for_sample)
 
                 # 构造当前样本的“真实四元组字符串列表”
@@ -166,7 +169,7 @@ def evaluate_model(model: HateSpeechDetectionModel,
 
                     # 修正：字符串拼接格式统一，使用 ' | '
                     true_quads_for_sample.append(f"{target_text} | {argument_text} | {group_str} | {hateful_str}")
-                test_idx += 1
+
                 if test_idx >= 80:
                     print("Predicted Quads for sample:", predicted_quads_for_sample)
                     print("True Quads for sample:", true_quads_for_sample)
@@ -187,6 +190,8 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
     """
     将单个样本的 logits 转换为预测四元组（字符串形式）
     """
+    global test_idx
+    test_idx += 1
     predicted_quads_strings = []
 
     t_start_logits = outputs_for_a_sample['target_start_logits'].squeeze(0).squeeze(-1)  # [L]
@@ -292,8 +297,8 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         as_idx, ae_idx = argument_idx_map[j_a]
 
         # Logic for skipping based on used_targets_tokens and used_arguments_tokens is removed.
-
         if score > PAIRING_THRESHOLD:  # 优先使用阈值过滤
+
             final_quad_candidates.append({
                 't_start_token': ts,
                 't_end_token': te,
@@ -307,10 +312,12 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
             if len(final_quad_candidates) >= MAX_PREDICTED_QUADS_PER_SAMPLE:
                 break  # 达到最大数量，停止添加
 
+    if test_idx >= 80:
+        print("candidates len:", len(final_quad_candidates))
     # 如果通过阈值后仍然没有候选，则强制取最高得分的 K_pair 个（防止完全没有预测）
     # Fallback logic no longer checks used_tokens
     if len(final_quad_candidates) == 0 and candidate_pairs_scores:
-        K_pair_fallback = 2  # 至少预测一个, can be adjusted via Hype.py if needed
+        K_pair_fallback = 1  # 至少预测一个, can be adjusted via Hype.py if needed
         for score, i_t, j_a in candidate_pairs_scores[:K_pair_fallback]:  # Iterate up to K_pair_fallback
             ts, te = target_idx_map[i_t]
             as_idx, ae_idx = argument_idx_map[j_a]
@@ -352,6 +359,8 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         combined_vec = torch.cat([target_vec, argument_vec, cls_output.squeeze(0)], dim=-1)  # cls_output 已经是 (1, H)
         all_quad_reprs.append(combined_vec)
 
+    if test_idx >= 80:
+        print("all_quad_reprs len:", len(all_quad_reprs))
     stacked_quad_reprs = torch.stack(all_quad_reprs, dim=0)  # (num_predicted_quads, 3*hidden_size)
 
     # 批量调用分类器
@@ -414,7 +423,35 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         # 修正：字符串拼接格式统一，使用 ' | '
         predicted_quads_strings.append(f"{target_text} | {argument_text} | {group_str} | {hateful_str}")
     # print(predicted_quads_strings)
+
+    if test_idx >= 80:
+        print("Predicted Quads Strings len", len(predicted_quads_strings))
+
     return predicted_quads_strings
+
+
+# --- NMS Helper Function ---
+def _calculate_span_iou(span1: Tuple[int, int], span2: Tuple[int, int]) -> float:
+    """
+    计算两个 Span (token indices) 之间的 IoU (Intersection over Union)。
+    span 格式: (start_token_idx, end_token_idx)
+    """
+    s1, e1 = span1
+    s2, e2 = span2
+
+    # 计算交集
+    intersection_start = max(s1, s2)
+    intersection_end = min(e1, e2)
+
+    intersection_length = max(0, intersection_end - intersection_start + 1)
+
+    # 计算并集
+    union_length = (e1 - s1 + 1) + (e2 - s2 + 1) - intersection_length
+
+    if union_length == 0:
+        return 0.0 # 避免除以零
+
+    return intersection_length / union_length
 
 
 # --------------- calculate_f1_scores ---------------

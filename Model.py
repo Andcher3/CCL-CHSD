@@ -6,11 +6,11 @@ from Biaffine import BiaffinePairing  # 导入Biaffine模块
 from typing import List, Dict, Any
 
 # 假设 Hype.py 已经导入，并且 TARGET_GROUP_CLASS_NAME 和 MAX_SEQ_LENGTH 已定义
-from Hype import TARGET_GROUP_CLASS_NAME, MAX_SEQ_LENGTH
+from Hype import *
 
 
 class HateSpeechDetectionModel(nn.Module):
-    def __init__(self, bert_model_name='bert-base-chinese'):
+    def __init__(self, bert_model_name=MODEL_NAME):
         super().__init__()
         self.bert = BertModel.from_pretrained(bert_model_name)
         self.hidden_size = self.bert.config.hidden_size  # BERT隐藏层维度
