@@ -34,6 +34,7 @@ NMS_OVERLAP_THRESHOLD = 0.5 # NMS 的 IoU 重叠阈值 (需要调优)
 APPLY_NMS = True
 NMS_IOU_THRESHOLD_TARGET = 0.7  # IoU threshold for target spans
 NMS_IOU_THRESHOLD_ARGUMENT = 0.7  # IoU threshold for argument spans
+NMS_CONTAINMENT_THRESHOLD = 0.85  # Min portion of one span covered by another to be considered similar
 
 if __name__ == '__main__':
     import torch

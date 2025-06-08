@@ -346,7 +346,11 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         return []
 
     # NMS parameters are now imported from Hype.py via "from Hype import *"
-    # APPLY_NMS, NMS_IOU_THRESHOLD_TARGET, NMS_IOU_THRESHOLD_ARGUMENT
+    # APPLY_NMS, NMS_IOU_THRESHOLD_TARGET, NMS_IOU_THRESHOLD_ARGUMENT, NMS_CONTAINMENT_THRESHOLD
+    # Placeholders for new Hype.py constants to be added in the next step
+    NON_HATE_DETERMINATION_MARGIN_PLACEHOLDER = 0.1
+    MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER = 0.4
+
 
     quads_for_nms = []
 
@@ -378,69 +382,91 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
             ae_idx = quad_cand['a_end_token']
             score = quad_cand['pair_score']
 
-            group_probs_single = group_probs_batch[idx]
-            hateful_prob_single = hateful_probs_batch[idx].item()
+            group_probs_single = group_probs_batch[idx] # Tensor of probabilities for each group
+            hateful_prob_single = hateful_probs_batch[idx].item() # Scalar probability of "hate"
 
-            # Initial determination of hateful_str and predicted_groups
-            hateful_str = 'hate' if hateful_prob_single > 0.5 else 'non-hate'
+            # --- Step 1: Extract Necessary Probabilities ---
+            prob_hateful_is_hate = hateful_prob_single
+            prob_hateful_is_non_hate = 1.0 - hateful_prob_single
 
-            initial_predicted_groups = []
-            for i, prob in enumerate(group_probs_single):
-                if prob.item() > 0.5:
-                    initial_predicted_groups.append(TARGET_GROUP_CLASS_NAME[i])
+            non_hate_group_idx = -1
+            others_group_idx = -1
+            non_hate_group_label_str = "non-hate" # Fallback string
+            others_group_label_str = "others"   # Fallback string
 
-            # Define group label constants for contradiction resolution
-            # Ensure TARGET_GROUP_CLASS_NAME has at least 'others' and 'non-hate'
-            if len(TARGET_GROUP_CLASS_NAME) < 2:
-                # This case should ideally not happen with current Hype.py settings
-                # Fallback: treat all groups as specific and have a generic non-hate label
-                specific_hate_groups = set(TARGET_GROUP_CLASS_NAME)
-                non_hate_group_label = "non-hate" # Generic fallback
-                others_group_label = "others" # Generic fallback
-                if not TARGET_GROUP_CLASS_NAME: # if TARGET_GROUP_CLASS_NAME is empty
-                    specific_hate_groups = set()
-            else:
-                specific_hate_groups = set(TARGET_GROUP_CLASS_NAME[:-1]) # All groups except the last one ('non-hate')
-                non_hate_group_label = TARGET_GROUP_CLASS_NAME[-1] # Should be 'non-hate'
-                # Ensure 'others' is present and correctly identified.
-                # Assuming 'others' is second to last, before 'non-hate'.
-                # If 'others' is not present or its position varies, this needs adjustment or a more robust lookup.
-                if 'others' in TARGET_GROUP_CLASS_NAME:
-                    others_group_label = 'others'
-                elif len(TARGET_GROUP_CLASS_NAME) > 1 : # if 'others' not present, use the one before 'non-hate' as a proxy if available
-                    others_group_label = TARGET_GROUP_CLASS_NAME[-2]
-                else: # fallback if only one group name exists (which is also non_hate_group_label)
-                    others_group_label = non_hate_group_label
+            try:
+                non_hate_group_idx = TARGET_GROUP_CLASS_NAME.index(non_hate_group_label_str)
+            except ValueError:
+                # Log error or set flag: 'non-hate' not in TARGET_GROUP_CLASS_NAME
+                # For now, we'll rely on non_hate_group_idx remaining -1 if not found.
+                pass
+
+            try:
+                others_group_idx = TARGET_GROUP_CLASS_NAME.index(others_group_label_str)
+            except ValueError:
+                # Log error or set flag: 'others' not in TARGET_GROUP_CLASS_NAME
+                pass
+
+            prob_group_is_non_hate = 0.0
+            if non_hate_group_idx != -1:
+                prob_group_is_non_hate = group_probs_single[non_hate_group_idx].item()
+
+            max_specific_hate_prob = 0.0
+            # Default strongest_specific_hate_label to 'others' string if index is valid, else the raw string.
+            strongest_specific_hate_label = TARGET_GROUP_CLASS_NAME[others_group_idx] if others_group_idx != -1 else others_group_label_str
+
+            num_specific_hate_candidate_groups = 0 # Not directly used in final decision logic for groups, but calculated as requested.
+
+            for j in range(len(TARGET_GROUP_CLASS_NAME)):
+                if j != non_hate_group_idx: # Specific hate group or 'others'
+                    current_group_prob = group_probs_single[j].item()
+                    if current_group_prob > max_specific_hate_prob:
+                        max_specific_hate_prob = current_group_prob
+                        strongest_specific_hate_label = TARGET_GROUP_CLASS_NAME[j]
+                    if current_group_prob > MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER:
+                        num_specific_hate_candidate_groups += 1
+
+            # If no specific group had prob > 0, and 'others' is a valid group,
+            # max_specific_hate_prob might effectively be the prob of 'others' if it was highest.
+            # If others_group_idx is valid and strongest_specific_hate_label defaulted to it, ensure max_specific_hate_prob reflects its probability.
+            if others_group_idx != -1 and strongest_specific_hate_label == TARGET_GROUP_CLASS_NAME[others_group_idx] and max_specific_hate_prob == 0.0:
+                 max_specific_hate_prob = group_probs_single[others_group_idx].item()
 
 
-            predicted_groups_resolved = list(initial_predicted_groups) # Work with a copy
+            # --- Step 2: Implement New Decision Logic ---
+            combined_score_non_hate = prob_hateful_is_non_hate + prob_group_is_non_hate
+            combined_score_hate = prob_hateful_is_hate + max_specific_hate_prob
 
-            if hateful_str == 'hate':
-                has_specific_hate = any(g in specific_hate_groups and g != non_hate_group_label for g in predicted_groups_resolved)
+            final_hateful_str = ""
+            final_predicted_groups_list = []
 
-                if non_hate_group_label in predicted_groups_resolved and has_specific_hate:
-                    predicted_groups_resolved.remove(non_hate_group_label) # Rule 1 for hate quads
+            if combined_score_non_hate >= combined_score_hate + NON_HATE_DETERMINATION_MARGIN_PLACEHOLDER:
+                final_hateful_str = "non-hate"
+                final_predicted_groups_list = [TARGET_GROUP_CLASS_NAME[non_hate_group_idx] if non_hate_group_idx != -1 else non_hate_group_label_str]
+            else: # Hate is dominant or margin not met
+                final_hateful_str = "hate"
+                temp_specific_groups = []
+                for k in range(len(TARGET_GROUP_CLASS_NAME)):
+                    if k != non_hate_group_idx and group_probs_single[k].item() > MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER:
+                        temp_specific_groups.append(TARGET_GROUP_CLASS_NAME[k])
 
-                # Rule 2, part 1: ensure 'hate' quads have a specific group or 'others'
-                # If no groups predicted, or only 'non-hate' was predicted (and subsequently removed if with other specific groups),
-                # or if 'non-hate' was the *only* group predicted for a 'hate' quad.
-                if not predicted_groups_resolved or \
-                   (len(predicted_groups_resolved) == 1 and predicted_groups_resolved[0] == non_hate_group_label) or \
-                   not any(g in specific_hate_groups and g != non_hate_group_label for g in predicted_groups_resolved):
-                    predicted_groups_resolved = [others_group_label]
+                if not temp_specific_groups:
+                    final_predicted_groups_list = [TARGET_GROUP_CLASS_NAME[others_group_idx] if others_group_idx != -1 else others_group_label_str]
+                else:
+                    final_predicted_groups_list = temp_specific_groups
 
-            else: # hateful_str == 'non-hate'
-                # Rule 2, part 2: 'non-hate' quads should ONLY have 'non-hate' group label
-                predicted_groups_resolved = [non_hate_group_label]
+            # --- Step 3: Finalize group_str ---
+            # Sort final_predicted_groups_list by the order in TARGET_GROUP_CLASS_NAME
+            # Handle cases where a resolved group string might not be in TARGET_GROUP_CLASS_NAME (e.g. fallback "others")
+            # For sorting, items not in TARGET_GROUP_CLASS_NAME can be placed at the end or beginning.
+            # Here, we prioritize those in TARGET_GROUP_CLASS_NAME.
+            final_predicted_groups_list.sort(key=lambda x: TARGET_GROUP_CLASS_NAME.index(x) if x in TARGET_GROUP_CLASS_NAME else float('inf'))
+            final_group_str = ','.join(final_predicted_groups_list)
 
-            # Final group_str formatting
-            # Ensure sorting is by the original TARGET_GROUP_CLASS_NAME index
-            # And ensure no empty group_str if predicted_groups_resolved is empty (though rules above try to prevent it)
-            if not predicted_groups_resolved: # Should not happen with the rules above
-                 predicted_groups_resolved = [non_hate_group_label] # Default if somehow empty
-
-            predicted_groups_resolved.sort(key=lambda x: TARGET_GROUP_CLASS_NAME.index(x) if x in TARGET_GROUP_CLASS_NAME else -1)
-            group_str = ','.join(predicted_groups_resolved)
+            # --- Step 4: Update `group_str` and `hateful_str` for NMS and output ---
+            # These will be used in quads_for_nms.append below
+            group_str = final_group_str
+            hateful_str = final_hateful_str
 
             target_text_raw = ""
             if ts != -1 and te != -1 and 0 <= ts <= te < seq_len:
@@ -475,7 +501,8 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
         processed_quads = apply_nms_to_quads(
             quads_for_nms,
             NMS_IOU_THRESHOLD_TARGET,
-            NMS_IOU_THRESHOLD_ARGUMENT
+            NMS_IOU_THRESHOLD_ARGUMENT,
+            NMS_CONTAINMENT_THRESHOLD # Use the imported constant
         )
 
     # Format final quads (after NMS) into strings
@@ -513,43 +540,73 @@ def _calculate_span_iou(span1: Tuple[int, int], span2: Tuple[int, int]) -> float
 
     return intersection_length / union_length
 
+# --- NMS Helper Functions (New/Modified) ---
+def _spans_are_similar(span1: Tuple[int, int], span2: Tuple[int, int], iou_threshold: float, containment_threshold: float) -> bool:
+    """
+    Checks if two spans are similar based on IoU or containment.
+    Handles invalid spans (start_token == -1) by returning False.
+    """
+    s1, e1 = span1
+    s2, e2 = span2
+
+    # If either span is invalid, they are not considered similar.
+    if s1 == -1 or e1 == -1 or s2 == -1 or e2 == -1:
+        return False
+
+    # Ensure valid span ranges (s <= e)
+    if s1 > e1 or s2 > e2:
+        return False # Invalid span definition
+
+    len1 = e1 - s1 + 1
+    len2 = e2 - s2 + 1
+
+    intersection_start = max(s1, s2)
+    intersection_end = min(e1, e2)
+    intersection_length = max(0, intersection_end - intersection_start + 1)
+
+    if intersection_length == 0:
+        return False
+
+    union_length = len1 + len2 - intersection_length
+    if union_length == 0: # Should not happen if intersection_length > 0, but as a safeguard
+        return False
+
+    iou = intersection_length / union_length
+
+    containment_score1 = intersection_length / len1 if len1 > 0 else 0
+    containment_score2 = intersection_length / len2 if len2 > 0 else 0
+
+    return (iou >= iou_threshold) or \
+           (containment_score1 >= containment_threshold) or \
+           (containment_score2 >= containment_threshold)
+
 
 # --- NMS Functions ---
-def _are_quads_similar(quad1: Dict, quad2: Dict, iou_threshold_target: float, iou_threshold_argument: float) -> bool:
+def _are_quads_similar(quad1: Dict, quad2: Dict, iou_threshold_target: float, iou_threshold_argument: float, containment_threshold: float) -> bool:
     """
-    Checks if two quadruplets are similar based on group_str, hateful_str, and IoU of target/argument spans.
+    Checks if two quadruplets are similar based on group_str, hateful_str,
+    and combined IoU/containment of target/argument spans.
     """
     if quad1['group_str'] != quad2['group_str'] or \
        quad1['hateful_str'] != quad2['hateful_str']:
         return False
 
-    # Handle cases with invalid spans (-1) by considering them non-overlapping.
     # Target spans
-    t_span1 = (quad1['t_start_token'], quad1['t_end_token'])
-    t_span2 = (quad2['t_start_token'], quad2['t_end_token'])
-    if t_span1[0] == -1 or t_span1[1] == -1 or t_span2[0] == -1 or t_span2[1] == -1:
-        target_iou = 0.0
-    else:
-        target_iou = _calculate_span_iou(t_span1, t_span2)
-
-    if target_iou <= iou_threshold_target:
+    target_span1 = (quad1['t_start_token'], quad1['t_end_token'])
+    target_span2 = (quad2['t_start_token'], quad2['t_end_token'])
+    if not _spans_are_similar(target_span1, target_span2, iou_threshold_target, containment_threshold):
         return False
 
     # Argument spans
-    a_span1 = (quad1['a_start_token'], quad1['a_end_token'])
-    a_span2 = (quad2['a_start_token'], quad2['a_end_token'])
-    if a_span1[0] == -1 or a_span1[1] == -1 or a_span2[0] == -1 or a_span2[1] == -1:
-        argument_iou = 0.0
-    else:
-        argument_iou = _calculate_span_iou(a_span1, a_span2)
-
-    if argument_iou <= iou_threshold_argument:
+    arg_span1 = (quad1['a_start_token'], quad1['a_end_token'])
+    arg_span2 = (quad2['a_start_token'], quad2['a_end_token'])
+    if not _spans_are_similar(arg_span1, arg_span2, iou_threshold_argument, containment_threshold):
         return False
 
     return True
 
 
-def apply_nms_to_quads(quad_list: List[Dict], iou_threshold_target: float, iou_threshold_argument: float) -> List[Dict]:
+def apply_nms_to_quads(quad_list: List[Dict], iou_threshold_target: float, iou_threshold_argument: float, containment_threshold: float) -> List[Dict]:
     """
     Applies Non-Maximum Suppression (NMS) to a list of quadruplets.
     Each quad in quad_list is a dict with 't_start_token', 't_end_token',
@@ -574,7 +631,7 @@ def apply_nms_to_quads(quad_list: List[Dict], iou_threshold_target: float, iou_t
         # Filter out similar quads from the rest of the list
         temp_remaining_quads = []
         for quad_to_compare in remaining_quads:
-            if not _are_quads_similar(current_quad, quad_to_compare, iou_threshold_target, iou_threshold_argument):
+            if not _are_quads_similar(current_quad, quad_to_compare, iou_threshold_target, iou_threshold_argument, containment_threshold):
                 temp_remaining_quads.append(quad_to_compare)
         remaining_quads = temp_remaining_quads
 
