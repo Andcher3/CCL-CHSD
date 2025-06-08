@@ -339,93 +339,153 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
     final_quad_candidates.sort(key=lambda x: x['pair_score'], reverse=True)
     final_quad_candidates = final_quad_candidates[:MAX_PREDICTED_QUADS_PER_SAMPLE]  # 再次裁剪
 
-    # 4. 分类并输出成字符串
+    # 4. 分类、收集信息用于NMS, (可选)应用NMS, 然后输出成字符串
     ids = sample_input_ids.squeeze(0)  # [L]
 
     if not final_quad_candidates:
-        return []  # 如果没有预测出任何四元组，直接返回空列表
+        return []
 
-    all_quad_reprs = []
-    for quad_cand in final_quad_candidates:
-        ts = quad_cand['t_start_token']
-        te = quad_cand['t_end_token']
-        as_idx = quad_cand['a_start_token']
-        ae_idx = quad_cand['a_end_token']
+    # NMS parameters are now imported from Hype.py via "from Hype import *"
+    # APPLY_NMS, NMS_IOU_THRESHOLD_TARGET, NMS_IOU_THRESHOLD_ARGUMENT
 
-        # 从单样本的 sequence_output 中获取 Span 表示
-        target_vec = model_instance._get_span_representation(sequence_output, ts, te, 0)
-        argument_vec = model_instance._get_span_representation(sequence_output, as_idx, ae_idx, 0)
+    quads_for_nms = []
 
-        combined_vec = torch.cat([target_vec, argument_vec, cls_output.squeeze(0)], dim=-1)  # cls_output 已经是 (1, H)
-        all_quad_reprs.append(combined_vec)
+    # First, gather all necessary information for NMS
+    if final_quad_candidates: # Ensure there are candidates before proceeding
+        all_quad_reprs = []
+        for quad_cand in final_quad_candidates:
+            ts = quad_cand['t_start_token']
+            te = quad_cand['t_end_token']
+            as_idx = quad_cand['a_start_token']
+            ae_idx = quad_cand['a_end_token']
+
+            target_vec = model_instance._get_span_representation(sequence_output, ts, te, 0)
+            argument_vec = model_instance._get_span_representation(sequence_output, as_idx, ae_idx, 0)
+            combined_vec = torch.cat([target_vec, argument_vec, cls_output.squeeze(0)], dim=-1)
+            all_quad_reprs.append(combined_vec)
+
+        stacked_quad_reprs = torch.stack(all_quad_reprs, dim=0)
+
+        group_logits_batch = model_instance.group_classifier(stacked_quad_reprs)
+        hateful_logits_batch = model_instance.hateful_classifier(stacked_quad_reprs)
+        group_probs_batch = torch.sigmoid(group_logits_batch)
+        hateful_probs_batch = torch.sigmoid(hateful_logits_batch)
+
+        for idx, quad_cand in enumerate(final_quad_candidates):
+            ts = quad_cand['t_start_token']
+            te = quad_cand['t_end_token']
+            as_idx = quad_cand['a_start_token']
+            ae_idx = quad_cand['a_end_token']
+            score = quad_cand['pair_score']
+
+            group_probs_single = group_probs_batch[idx]
+            hateful_prob_single = hateful_probs_batch[idx].item()
+
+            # Initial determination of hateful_str and predicted_groups
+            hateful_str = 'hate' if hateful_prob_single > 0.5 else 'non-hate'
+
+            initial_predicted_groups = []
+            for i, prob in enumerate(group_probs_single):
+                if prob.item() > 0.5:
+                    initial_predicted_groups.append(TARGET_GROUP_CLASS_NAME[i])
+
+            # Define group label constants for contradiction resolution
+            # Ensure TARGET_GROUP_CLASS_NAME has at least 'others' and 'non-hate'
+            if len(TARGET_GROUP_CLASS_NAME) < 2:
+                # This case should ideally not happen with current Hype.py settings
+                # Fallback: treat all groups as specific and have a generic non-hate label
+                specific_hate_groups = set(TARGET_GROUP_CLASS_NAME)
+                non_hate_group_label = "non-hate" # Generic fallback
+                others_group_label = "others" # Generic fallback
+                if not TARGET_GROUP_CLASS_NAME: # if TARGET_GROUP_CLASS_NAME is empty
+                    specific_hate_groups = set()
+            else:
+                specific_hate_groups = set(TARGET_GROUP_CLASS_NAME[:-1]) # All groups except the last one ('non-hate')
+                non_hate_group_label = TARGET_GROUP_CLASS_NAME[-1] # Should be 'non-hate'
+                # Ensure 'others' is present and correctly identified.
+                # Assuming 'others' is second to last, before 'non-hate'.
+                # If 'others' is not present or its position varies, this needs adjustment or a more robust lookup.
+                if 'others' in TARGET_GROUP_CLASS_NAME:
+                    others_group_label = 'others'
+                elif len(TARGET_GROUP_CLASS_NAME) > 1 : # if 'others' not present, use the one before 'non-hate' as a proxy if available
+                    others_group_label = TARGET_GROUP_CLASS_NAME[-2]
+                else: # fallback if only one group name exists (which is also non_hate_group_label)
+                    others_group_label = non_hate_group_label
+
+
+            predicted_groups_resolved = list(initial_predicted_groups) # Work with a copy
+
+            if hateful_str == 'hate':
+                has_specific_hate = any(g in specific_hate_groups and g != non_hate_group_label for g in predicted_groups_resolved)
+
+                if non_hate_group_label in predicted_groups_resolved and has_specific_hate:
+                    predicted_groups_resolved.remove(non_hate_group_label) # Rule 1 for hate quads
+
+                # Rule 2, part 1: ensure 'hate' quads have a specific group or 'others'
+                # If no groups predicted, or only 'non-hate' was predicted (and subsequently removed if with other specific groups),
+                # or if 'non-hate' was the *only* group predicted for a 'hate' quad.
+                if not predicted_groups_resolved or \
+                   (len(predicted_groups_resolved) == 1 and predicted_groups_resolved[0] == non_hate_group_label) or \
+                   not any(g in specific_hate_groups and g != non_hate_group_label for g in predicted_groups_resolved):
+                    predicted_groups_resolved = [others_group_label]
+
+            else: # hateful_str == 'non-hate'
+                # Rule 2, part 2: 'non-hate' quads should ONLY have 'non-hate' group label
+                predicted_groups_resolved = [non_hate_group_label]
+
+            # Final group_str formatting
+            # Ensure sorting is by the original TARGET_GROUP_CLASS_NAME index
+            # And ensure no empty group_str if predicted_groups_resolved is empty (though rules above try to prevent it)
+            if not predicted_groups_resolved: # Should not happen with the rules above
+                 predicted_groups_resolved = [non_hate_group_label] # Default if somehow empty
+
+            predicted_groups_resolved.sort(key=lambda x: TARGET_GROUP_CLASS_NAME.index(x) if x in TARGET_GROUP_CLASS_NAME else -1)
+            group_str = ','.join(predicted_groups_resolved)
+
+            target_text_raw = ""
+            if ts != -1 and te != -1 and 0 <= ts <= te < seq_len:
+                target_ids = ids[ts:te + 1].tolist()
+                target_text_raw = tokenizer.decode(target_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                target_text_raw = target_text_raw.replace(" ", "") if target_text_raw.replace(" ", "") != "" else "NULL"
+            else:
+                target_text_raw = 'NULL'
+            target_text_raw = target_text_raw if target_text_raw.strip() else 'NULL'
+
+            argument_text_raw = ""
+            if as_idx != -1 and ae_idx != -1 and 0 <= as_idx <= ae_idx < seq_len:
+                argument_ids = ids[as_idx:ae_idx + 1].tolist()
+                argument_text_raw = tokenizer.decode(argument_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                argument_text_raw = argument_text_raw.replace(" ", "") if argument_text_raw.replace(" ", "") != "" else "NULL"
+            else:
+                argument_text_raw = "NULL"
+            argument_text_raw = argument_text_raw if argument_text_raw.strip() else 'NULL'
+
+            quads_for_nms.append({
+                't_start_token': ts, 't_end_token': te,
+                'a_start_token': as_idx, 'a_end_token': ae_idx,
+                'group_str': group_str,
+                'hateful_str': hateful_str,
+                'score': score,
+                'target_text_raw': target_text_raw,
+                'argument_text_raw': argument_text_raw
+            })
+
+    processed_quads = quads_for_nms
+    if APPLY_NMS and quads_for_nms:
+        processed_quads = apply_nms_to_quads(
+            quads_for_nms,
+            NMS_IOU_THRESHOLD_TARGET,
+            NMS_IOU_THRESHOLD_ARGUMENT
+        )
+
+    # Format final quads (after NMS) into strings
+    for quad_data in processed_quads:
+        predicted_quads_strings.append(
+            f"{quad_data['target_text_raw']} | {quad_data['argument_text_raw']} | {quad_data['group_str']} | {quad_data['hateful_str']}"
+        )
 
     if test_idx >= 80:
-        print("all_quad_reprs len:", len(all_quad_reprs))
-    stacked_quad_reprs = torch.stack(all_quad_reprs, dim=0)  # (num_predicted_quads, 3*hidden_size)
-
-    # 批量调用分类器
-    group_logits_batch = model_instance.group_classifier(stacked_quad_reprs)
-    hateful_logits_batch = model_instance.hateful_classifier(stacked_quad_reprs)
-
-    group_probs_batch = torch.sigmoid(group_logits_batch)
-    hateful_probs_batch = torch.sigmoid(hateful_logits_batch)
-
-    # 遍历预测结果并格式化
-    for idx, quad_cand in enumerate(final_quad_candidates):
-        ts = quad_cand['t_start_token']
-        te = quad_cand['t_end_token']
-        as_idx = quad_cand['a_start_token']
-        ae_idx = quad_cand['a_end_token']
-
-        group_probs_single = group_probs_batch[idx]  # (num_groups)
-        hateful_prob_single = hateful_probs_batch[idx].item()  # scalar
-
-        # 确定 Targeted Group (多标签)
-        predicted_groups = []
-        for i, prob in enumerate(group_probs_single):
-            if prob.item() > 0.5:  # 可以调整阈值
-                predicted_groups.append(TARGET_GROUP_CLASS_NAME[i])
-
-        # 修正：保证顺序一致，并使用','分隔 (已在 calculate_f1_scores 的 helper 中处理)
-        predicted_groups.sort(key=lambda x: TARGET_GROUP_CLASS_NAME.index(x))  # 确保按Hype中定义的顺序
-        group_str = ','.join(predicted_groups) if predicted_groups else 'non-hate'
-
-        # 确定 Hateful
-        hateful_str = 'hate' if hateful_prob_single > 0.5 else 'non-hate'
-
-        # 将 token span 转换为文本 (使用 sample_input_ids)
-        target_text = ""
-        argument_text = ""
-
-        # 确保 ts, te, as_idx, ae_idx 在 token 序列的有效范围内
-        # 这里的 seq_len 是原始的 token 序列长度，包含 padding
-        if ts != -1 and te != -1 and 0 <= ts <= te < seq_len:
-            target_ids = ids[ts:te + 1].tolist()
-            target_text = tokenizer.decode(target_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-
-            target_text = target_text.replace(" ", "") if target_text.replace(" ", "") != "" else "NULL"
-        else:
-            target_text = 'NULL'
-
-        if as_idx != -1 and ae_idx != -1 and 0 <= as_idx <= ae_idx < seq_len:
-            argument_ids = ids[as_idx:ae_idx + 1].tolist()
-            argument_text = tokenizer.decode(argument_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-
-            argument_text = argument_text.replace(" ", "") if argument_text.replace(" ", "") != "" else "NULL"
-        else:
-            argument_text = "NULL"
-        # 修正：对于 'NULL' 字符串的特殊处理
-        # 如果 `decode` 结果是空字符串，就将其替换为 'NULL'。
-        target_text = target_text if target_text.strip() else 'NULL'  # 使用 .strip() 处理空字符串和纯空白字符串
-        argument_text = argument_text if argument_text.strip() else 'NULL'
-
-        # 格式化为最终输出字符串
-        # 修正：字符串拼接格式统一，使用 ' | '
-        predicted_quads_strings.append(f"{target_text} | {argument_text} | {group_str} | {hateful_str}")
-    # print(predicted_quads_strings)
-
-    if test_idx >= 80:
-        print("Predicted Quads Strings len", len(predicted_quads_strings))
+        print("Predicted Quads Strings len after NMS (if applied):", len(predicted_quads_strings))
 
     return predicted_quads_strings
 
@@ -452,6 +512,73 @@ def _calculate_span_iou(span1: Tuple[int, int], span2: Tuple[int, int]) -> float
         return 0.0 # 避免除以零
 
     return intersection_length / union_length
+
+
+# --- NMS Functions ---
+def _are_quads_similar(quad1: Dict, quad2: Dict, iou_threshold_target: float, iou_threshold_argument: float) -> bool:
+    """
+    Checks if two quadruplets are similar based on group_str, hateful_str, and IoU of target/argument spans.
+    """
+    if quad1['group_str'] != quad2['group_str'] or \
+       quad1['hateful_str'] != quad2['hateful_str']:
+        return False
+
+    # Handle cases with invalid spans (-1) by considering them non-overlapping.
+    # Target spans
+    t_span1 = (quad1['t_start_token'], quad1['t_end_token'])
+    t_span2 = (quad2['t_start_token'], quad2['t_end_token'])
+    if t_span1[0] == -1 or t_span1[1] == -1 or t_span2[0] == -1 or t_span2[1] == -1:
+        target_iou = 0.0
+    else:
+        target_iou = _calculate_span_iou(t_span1, t_span2)
+
+    if target_iou <= iou_threshold_target:
+        return False
+
+    # Argument spans
+    a_span1 = (quad1['a_start_token'], quad1['a_end_token'])
+    a_span2 = (quad2['a_start_token'], quad2['a_end_token'])
+    if a_span1[0] == -1 or a_span1[1] == -1 or a_span2[0] == -1 or a_span2[1] == -1:
+        argument_iou = 0.0
+    else:
+        argument_iou = _calculate_span_iou(a_span1, a_span2)
+
+    if argument_iou <= iou_threshold_argument:
+        return False
+
+    return True
+
+
+def apply_nms_to_quads(quad_list: List[Dict], iou_threshold_target: float, iou_threshold_argument: float) -> List[Dict]:
+    """
+    Applies Non-Maximum Suppression (NMS) to a list of quadruplets.
+    Each quad in quad_list is a dict with 't_start_token', 't_end_token',
+    'a_start_token', 'a_end_token', 'group_str', 'hateful_str', and 'score'.
+    """
+    if not quad_list:
+        return []
+
+    # Sort quads by score in descending order
+    # The 'score' key is assumed to be present in each quad dictionary
+    quad_list.sort(key=lambda x: x.get('score', 0.0), reverse=True)
+
+    kept_quads = []
+
+    # Make a copy to allow modification during iteration
+    remaining_quads = list(quad_list)
+
+    while remaining_quads:
+        current_quad = remaining_quads.pop(0) # Get the quad with the highest score
+        kept_quads.append(current_quad)
+
+        # Filter out similar quads from the rest of the list
+        temp_remaining_quads = []
+        for quad_to_compare in remaining_quads:
+            if not _are_quads_similar(current_quad, quad_to_compare, iou_threshold_target, iou_threshold_argument):
+                temp_remaining_quads.append(quad_to_compare)
+        remaining_quads = temp_remaining_quads
+
+    return kept_quads
 
 
 # --------------- calculate_f1_scores ---------------

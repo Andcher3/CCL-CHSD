@@ -30,6 +30,11 @@ MODEL_SAVE_PATH = "results/model"
 PAIRING_THRESHOLD = 0.5
 NMS_OVERLAP_THRESHOLD = 0.5 # NMS 的 IoU 重叠阈值 (需要调优)
 
+# --- NMS Configuration ---
+APPLY_NMS = True
+NMS_IOU_THRESHOLD_TARGET = 0.7  # IoU threshold for target spans
+NMS_IOU_THRESHOLD_ARGUMENT = 0.7  # IoU threshold for argument spans
+
 if __name__ == '__main__':
     import torch
     print(torch.cuda.is_available())
