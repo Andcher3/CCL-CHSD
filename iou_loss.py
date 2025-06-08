@@ -134,7 +134,7 @@ class SpanBoundarySmoothKLDivLoss(nn.Module):
 
     def forward(self,
                 start_logits: torch.Tensor,  # [B, L]
-                end_logits: torch.Tensor,  # [B, L]
+                end_logits:   torch.Tensor,  # [B, L]
                 quads_labels_batch: List[List[Dict[str, Any]]],
                 device: torch.device) -> torch.Tensor:
         B, L = start_logits.size()
@@ -142,11 +142,11 @@ class SpanBoundarySmoothKLDivLoss(nn.Module):
         num_valid_gold_spans_processed = 0
 
         # 获取 Hype 中定义的 TOPK_SPAN (例如 8 或 10)
-        k_span_for_comb = TOPK_SPAN  # 控制用于组合的 Top-K start/end 数量
+        k_span_for_comb = TOPK_SPAN # 控制用于组合的 Top-K start/end 数量
 
-        for b in range(B):  # 遍历批次中的每个样本
+        for b in range(B): # 遍历批次中的每个样本
             current_start_logits = start_logits[b]  # [L]
-            current_end_logits = end_logits[b]  # [L]
+            current_end_logits = end_logits[b]      # [L]
             current_quads_list = quads_labels_batch[b]
 
             current_gold_spans_for_kl = []
@@ -156,42 +156,41 @@ class SpanBoundarySmoothKLDivLoss(nn.Module):
                     s, e = quad['t_start_token'].item(), quad['t_end_token'].item()
                 elif self.span_type == "argument":
                     s, e = quad['a_start_token'].item(), quad['a_end_token'].item()
-
+                
                 if 0 <= s <= e < L:
                     current_gold_spans_for_kl.append((s, e))
+            
+            if not current_gold_spans_for_kl and len(current_quads_list) > 0: # 如果有quads但gold span无效，继续
+                continue 
+            elif not current_gold_spans_for_kl and len(current_quads_list) == 0: # 没有quads, 跳过
+                continue
 
-            if not current_gold_spans_for_kl and len(current_quads_list) > 0:  # 如果有quads但gold span无效，继续
-                continue
-            elif not current_gold_spans_for_kl and len(current_quads_list) == 0:  # 没有quads, 跳过
-                continue
 
             # 2. 生成 Top-K 候选 Span (优化点)
             # 在有效区间 [1, L-2] 内获取 Top-K
             valid_start_idx_for_cand = 1
-            valid_end_idx_for_cand = L - 2
-
-            if valid_end_idx_for_cand < valid_start_idx_for_cand:  # 文本太短
+            valid_end_idx_for_cand = L - 2 
+            
+            if valid_end_idx_for_cand < valid_start_idx_for_cand: # 文本太短
                 continue
 
             # 确保 k_span_for_comb 不会大于实际可用的 token 数量
             actual_k_for_topk = min(k_span_for_comb, valid_end_idx_for_cand - valid_start_idx_for_cand + 1)
-            if actual_k_for_topk <= 0:  # 没法取 Top-K
+            if actual_k_for_topk <= 0: # 没法取 Top-K
                 continue
 
             # 在 GPU 上获取 Top-K 的 start/end 索引
-            topk_s_indices = torch.topk(current_start_logits[valid_start_idx_for_cand: valid_end_idx_for_cand + 1],
-                                        k=actual_k_for_topk).indices + valid_start_idx_for_cand
-            topk_e_indices = torch.topk(current_end_logits[valid_start_idx_for_cand: valid_end_idx_for_cand + 1],
-                                        k=actual_k_for_topk).indices + valid_start_idx_for_cand
+            topk_s_indices = torch.topk(current_start_logits[valid_start_idx_for_cand : valid_end_idx_for_cand + 1], k=actual_k_for_topk).indices + valid_start_idx_for_cand
+            topk_e_indices = torch.topk(current_end_logits[valid_start_idx_for_cand : valid_end_idx_for_cand + 1], k=actual_k_for_topk).indices + valid_start_idx_for_cand
 
-            all_raw_candidate_spans_with_scores = []
+            all_raw_candidate_spans_with_scores = [] 
             # 只组合 Top-K 的索引
             for s_idx in topk_s_indices.tolist():
                 for e_idx in topk_e_indices.tolist():
                     if s_idx <= e_idx and (e_idx - s_idx + 1) <= MAX_SPAN_LENGTH:
-                        score = current_start_logits[s_idx] + current_end_logits[e_idx]  # Sum of logits
+                        score = current_start_logits[s_idx] + current_end_logits[e_idx] # Sum of logits
                         all_raw_candidate_spans_with_scores.append(((s_idx, e_idx), score))
-
+            
             if not all_raw_candidate_spans_with_scores:
                 continue
             # 3. 筛选候选 Span (Top-K + 强制包含真实 Span)

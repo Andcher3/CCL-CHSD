@@ -6,7 +6,7 @@ from Hype import *
 
 
 # 1. 加载BERT分词器
-tokenizer = BertTokenizerFast.from_pretrained('bert-base-chinese')  # 或者 'hfl/chinese-bert-wwm-ext'
+tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)  # 或者 'hfl/chinese-bert-wwm-ext'
 
 
 def convert_samples_to_features(processed_data: List[Dict[str, Any]], tokenizer: BertTokenizerFast = tokenizer,

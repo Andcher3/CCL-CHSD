@@ -1,130 +1,10 @@
 # loss.py
 import torch
 import torch.nn as nn
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 from iou_loss import SpanIoUWeightedLoss, SpanBoundarySmoothKLDivLoss
 from Hype import *  # 假设 Hype.py 中定义了这两个常量
 import torch.nn.functional as F
-
-# iou-like loss compute, deprecated
-# def boundary_smoothing_span_loss(start_logits, end_logits, gold_spans_batch, seq_len, device):
-#     epsilon = BOUNDARY_SMOOTHING_EPSILON
-#     D_smooth = BOUNDARY_SMOOTHING_D
-#     # Not to be confused with MAX_SEQ_LENGTH, this is for span candidates.
-#     current_max_span_len = MAX_SPAN_LENGTH
-#
-#     batch_size = start_logits.size(0)
-#     accumulated_loss = torch.tensor(0.0, device=device)
-#     num_gold_spans_processed = 0
-#
-#     for b in range(batch_size):
-#         current_start_logits = start_logits[b]  # Shape: [seq_len]
-#         current_end_logits = end_logits[b]  # Shape: [seq_len]
-#         # gold_spans_batch[b] is a list of dicts, e.g., [{'start': s_val, 'end': e_val}, ...]
-#         current_gold_spans_info = gold_spans_batch[b]
-#
-#         if not current_gold_spans_info:  # No gold spans for this batch item
-#             continue
-#
-#         # 1. Generate all candidate spans and their raw scores for this batch item
-#         candidate_spans = []  # List of (s, e) tuples
-#         candidate_raw_scores = []  # List of corresponding scores
-#         for s_idx in range(seq_len):
-#             # Ensure e_idx does not exceed seq_len and respects current_max_span_len
-#             for e_idx in range(s_idx, min(seq_len, s_idx + current_max_span_len)):
-#                 candidate_spans.append((s_idx, e_idx))
-#                 score = current_start_logits[s_idx] + current_end_logits[e_idx]
-#                 candidate_raw_scores.append(score)
-#
-#         if not candidate_spans:  # No possible candidate spans generated
-#             continue
-#
-#         candidate_scores_tensor = torch.tensor(candidate_raw_scores, device=device)
-#         # Predicted distribution (log probabilities) over all candidate spans for item b
-#         # Use .float() to ensure tensor is float for log_softmax if scores are int/long
-#         pred_log_probs = F.log_softmax(candidate_scores_tensor.float(), dim=0)
-#
-#         # Iterate over each gold span for the current batch item
-#         for gold_span_info in current_gold_spans_info:
-#             gs = gold_span_info['start']
-#             ge = gold_span_info['end']
-#
-#             # Ensure gs, ge are integers (they might be tensors from batch data)
-#             if isinstance(gs, torch.Tensor): gs = gs.item()
-#             if isinstance(ge, torch.Tensor): ge = ge.item()
-#
-#             # Basic validation for gold span coordinates
-#             if not (0 <= gs < seq_len and 0 <= ge < seq_len and gs <= ge):
-#                 continue
-#
-#             # Check if the gold span is among the candidates
-#             try:
-#                 gold_span_candidate_idx = candidate_spans.index((gs, ge))
-#             except ValueError:
-#                 # This gold span is not a valid candidate under current MAX_SPAN_LENGTH
-#                 # or other candidate generation rules. Skip it.
-#                 continue
-#
-#             # 2. Create smoothed target distribution for THIS gold span
-#             num_candidates = len(candidate_spans)
-#             target_dist = torch.zeros(num_candidates, device=device, dtype=torch.float)  # Ensure float for kl_div
-#
-#             neighbors_indices = []
-#             for i, (cs, ce) in enumerate(candidate_spans):
-#                 if i == gold_span_candidate_idx:
-#                     continue
-#                 # Manhattan distance
-#                 manhattan_dist = abs(gs - cs) + abs(ge - ce)
-#                 if 0 < manhattan_dist <= D_smooth:  # Strictly positive distance
-#                     neighbors_indices.append(i)
-#
-#             if not neighbors_indices:  # No neighbors within distance D_smooth
-#                 target_dist[gold_span_candidate_idx] = 1.0
-#             else:
-#                 target_dist[gold_span_candidate_idx] = 1.0 - epsilon
-#                 if len(neighbors_indices) > 0:  # Distribute epsilon only if there are neighbors
-#                     prob_for_each_neighbor = epsilon / len(neighbors_indices)
-#                     for neighbor_idx in neighbors_indices:
-#                         target_dist[neighbor_idx] = prob_for_each_neighbor
-#
-#             # Normalize target_dist to sum to 1, crucial for KL divergence
-#             current_sum = target_dist.sum()
-#             if current_sum > 1e-6:  # Avoid division by zero if target_dist is all zeros
-#                 target_dist = target_dist / current_sum
-#             else:
-#                 # This case handles when target_dist sums to 0 (e.g. epsilon=1, gold span is its only neighbor)
-#                 # We should skip loss calculation for this gold span as target is undefined.
-#                 continue
-#
-#             # 3. Calculate KL Divergence loss for this gold span
-#             # Check for NaNs/Infs before calling kl_div
-#             if torch.isnan(target_dist).any() or torch.isinf(target_dist).any() or \
-#                     torch.isnan(pred_log_probs).any() or torch.isinf(pred_log_probs).any():
-#                 # print(f"Warning: NaN or Inf detected before kl_div for gold span ({gs},{ge}). Skipping.")
-#                 continue
-#
-#             # Final check on target_dist sum before loss calculation
-#             if not (0.99 < target_dist.sum().item() < 1.01):
-#                 # print(f"Warning: target_dist sum is not 1 before kl_div for gold span ({gs},{ge}). Sum: {
-#                 # target_dist.sum().item()}. Skipping.")
-#                 continue
-#
-#             loss_one_gold_span = F.kl_div(pred_log_probs, target_dist, reduction='sum', log_target=False)
-#
-#             if not torch.isnan(loss_one_gold_span) and not torch.isinf(loss_one_gold_span):
-#                 accumulated_loss += loss_one_gold_span
-#                 num_gold_spans_processed += 1
-#             # else:
-#             # print(f"Warning: NaN or Inf loss for gold span ({gs},{ge}). Skipping.")
-#
-#     if num_gold_spans_processed == 0:
-#         return torch.tensor(0.0, device=device)
-#
-#     return accumulated_loss / num_gold_spans_processed
-
-
-# 损失函数实例 pos_weight_value = torch.tensor([(MAX_SEQ_LENGTH - 1) / 1], device=torch.device("cuda" if
-# torch.cuda.is_available() else "cpu")) span_loss_fct    = nn.BCEWithLogitsLoss(reduction='mean')
 
 
 target_span_iou_loss_fct = SpanIoUWeightedLoss(
@@ -182,6 +62,88 @@ def _make_arg_end_labels(quads_labels_batch, seq_len, device):
                 labels[b, ae_idx] = 1.0
     return labels
 
+# ===== Diversity Loss Function =====
+def calculate_diversity_loss(
+    per_sample_matched_pred_span_probs: List[List[Dict[str, torch.Tensor]]], 
+    per_sample_matched_gt_indices: List[List[int]], 
+    device: torch.device
+) -> torch.Tensor:
+    """
+    Calculates diversity loss based on similarity of predicted span probability distributions
+    for predictions that map to different ground truths.
+
+    Args:
+        per_sample_matched_pred_span_probs: List (batch) of lists (matched preds per sample) 
+                                            of dicts. Each dict has keys 
+                                            {'ts_probs', 'te_probs', 'as_probs', 'ae_probs'} 
+                                            with probability tensor values (seq_len).
+        per_sample_matched_gt_indices: List (batch) of lists (matched preds per sample) of int.
+                                       Each int is the gt_idx for the corresponding prediction.
+        device: Current torch device.
+    Returns:
+        A scalar tensor representing the diversity loss.
+    """
+    total_diversity_loss = torch.tensor(0.0, device=device)
+    num_samples_with_diversity_pairs = 0
+
+    batch_size = len(per_sample_matched_pred_span_probs)
+
+    for b in range(batch_size):
+        sample_pred_probs_list = per_sample_matched_pred_span_probs[b]
+        sample_gt_indices_list = per_sample_matched_gt_indices[b]
+
+        num_matched_preds_in_sample = len(sample_pred_probs_list)
+
+        if num_matched_preds_in_sample < 2:
+            continue
+        
+        # Only count this sample if it has potential for diversity pairs
+        # This flag will be set true if at least one valid diversity pair is found
+        sample_contributed_to_loss = False 
+        sample_diversity_loss = torch.tensor(0.0, device=device)
+        num_diversity_pairs_in_sample = 0
+
+        for k in range(num_matched_preds_in_sample):
+            for l in range(k + 1, num_matched_preds_in_sample):
+                gt_idx_A = sample_gt_indices_list[k]
+                gt_idx_B = sample_gt_indices_list[l]
+
+                if gt_idx_A != gt_idx_B:
+                    pred_A_probs_dict = sample_pred_probs_list[k]
+                    pred_B_probs_dict = sample_pred_probs_list[l]
+
+                    # Target Start Probs Similarity
+                    similarity_ts = torch.sum(pred_A_probs_dict['ts_probs'] * pred_B_probs_dict['ts_probs'])
+                    sample_diversity_loss += similarity_ts
+                    
+                    # Target End Probs Similarity
+                    similarity_te = torch.sum(pred_A_probs_dict['te_probs'] * pred_B_probs_dict['te_probs'])
+                    sample_diversity_loss += similarity_te
+
+                    # Argument Start Probs Similarity
+                    similarity_as = torch.sum(pred_A_probs_dict['as_probs'] * pred_B_probs_dict['as_probs'])
+                    sample_diversity_loss += similarity_as
+
+                    # Argument End Probs Similarity
+                    similarity_ae = torch.sum(pred_A_probs_dict['ae_probs'] * pred_B_probs_dict['ae_probs'])
+                    sample_diversity_loss += similarity_ae
+                    
+                    num_diversity_pairs_in_sample += 1
+                    if not sample_contributed_to_loss:
+                        sample_contributed_to_loss = True
+
+        if num_diversity_pairs_in_sample > 0:
+            total_diversity_loss += (sample_diversity_loss / num_diversity_pairs_in_sample)
+        
+        if sample_contributed_to_loss: # if we found any pair A,B where gt_idx_A != gt_idx_B
+             num_samples_with_diversity_pairs +=1
+
+
+    if num_samples_with_diversity_pairs > 0:
+        return total_diversity_loss / num_samples_with_diversity_pairs
+    else:
+        return torch.tensor(0.0, device=device)
+
 
 # ===== 4. compute_total_loss 的完整实现 =====
 def compute_total_loss(outputs: Dict[str, torch.Tensor],
@@ -192,7 +154,7 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
                        group_weight: float = 0.5,
                        hateful_weight: float = 0.5,
                        biaffine_weight: float = 1.0,
-                       # 新增参数：两种 Span Loss 的内部权重
+                       diversity_loss_weight: float = 0.1,  # 新增参数：多样性损失的权重
                        iou_loss_ratio: float = 0.9,  # IoU 加权 BCE 的权重
                        kl_loss_ratio: float = 0.1  # 边界平滑 KL 的权重
                        ) -> (torch.Tensor, Dict[str, float]):
@@ -208,6 +170,36 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
     cls_output = outputs['cls_output']  # [B,   H]
 
     batch_size, seq_len = t_start_logits.size()
+
+    # Data collection for diversity loss
+    batch_span_probs_for_diversity = []
+    batch_gt_indices_for_diversity = []
+
+    for b_idx in range(batch_size):
+        current_sample_quads = quads_labels_batch[b_idx]
+        sample_span_probs_for_diversity = []
+        sample_gt_indices_for_diversity = []
+
+        if len(current_sample_quads) > 1:
+            # These are global probs for sample b_idx, shared across its GT quads for diversity input
+            sample_target_start_probs = torch.sigmoid(t_start_logits[b_idx])
+            sample_target_end_probs = torch.sigmoid(t_end_logits[b_idx])
+            sample_argument_start_probs = torch.sigmoid(a_start_logits[b_idx])
+            sample_argument_end_probs = torch.sigmoid(a_end_logits[b_idx])
+
+            for k_gt_idx, _ in enumerate(current_sample_quads):
+                current_pred_span_probs = {
+                    'ts_probs': sample_target_start_probs,
+                    'te_probs': sample_target_end_probs,
+                    'as_probs': sample_argument_start_probs,
+                    'ae_probs': sample_argument_end_probs
+                }
+                sample_span_probs_for_diversity.append(current_pred_span_probs)
+                sample_gt_indices_for_diversity.append(k_gt_idx)
+        
+        batch_span_probs_for_diversity.append(sample_span_probs_for_diversity)
+        batch_gt_indices_for_diversity.append(sample_gt_indices_for_diversity)
+
     # ---- 2. Span Extraction Loss (IoU-Weighted BCE + Boundary-Smooth KL) ----
     # 2a. 计算 IoU 加权 BCE Loss
     target_span_iou_loss_component = target_span_iou_loss_fct(
@@ -338,13 +330,25 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
         total_group_loss = torch.tensor(0.0, device=device)
         total_hateful_loss = torch.tensor(0.0, device=device)
 
-    # ---- 5. 加权合并 ----
+    # ---- 5. Diversity Loss Calculation ----
+    diversity_loss_val = torch.tensor(0.0, device=device) # Initialize
+    if ENABLE_DIVERSITY_LOSS: # Use imported constant
+        # Data collection for diversity loss is already done above
+        diversity_loss_val = calculate_diversity_loss(
+            batch_span_probs_for_diversity,
+            batch_gt_indices_for_diversity,
+            device
+        )
+
+    # ---- 6. 加权合并 ----
     loss = (
             span_weight * total_span_loss +
             biaffine_weight * total_pair_loss +
             group_weight * total_group_loss +
             hateful_weight * total_hateful_loss
     )
+    if ENABLE_DIVERSITY_LOSS: # Use imported constant
+        loss += diversity_loss_val * diversity_loss_weight # Use imported constant
 
     # 准备返回的各组件 Loss（转为 Python float 方便打印）
     loss_components = {
@@ -353,6 +357,7 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
         'kl_span_loss': total_span_kl_loss_component.item(),  # 新增：方便查看 KL 部分损失
         'biaffine_loss': total_pair_loss.item(),
         'group_loss': total_group_loss.item(),
-        'hateful_loss': total_hateful_loss.item()
+        'hateful_loss': total_hateful_loss.item(),
+        'diversity_loss': diversity_loss_val.item() # Add diversity loss component (will be 0.0 if not enabled)
     }
     return loss, loss_components

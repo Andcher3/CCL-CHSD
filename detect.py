@@ -1,24 +1,23 @@
 import torch
 import json
-import argparse  # Import argparse
+import argparse # Import argparse
 from transformers import BertTokenizerFast
-from torch.utils.data import DataLoader, Dataset  # DataLoader might not be strictly needed if processing one by one
+from torch.utils.data import DataLoader, Dataset # DataLoader might not be strictly needed if processing one by one
 
 # Assuming Model.py and Hype.py are in the same directory or accessible in PYTHONPATH
 from Model import HateSpeechDetectionModel
 from Hype import *
-from eval import convert_logits_to_quads  # Tentative import
-
+from eval import convert_logits_to_quads # Tentative import
 
 def main():
     # --- 0. Argument Parsing ---
     parser = argparse.ArgumentParser(description="Run hate speech detection and output results.")
-    parser.add_argument('--input_file', type=str, default='test1.json',
+    parser.add_argument('--input_file', type=str, default='data/test1.json',
                         help='Path to the input JSON file.')
-    parser.add_argument('--output_file', type=str, default='results.txt',
+    parser.add_argument('--output_file', type=str, default='results/results.txt',
                         help='Path to save the output TXT file.')
     # Construct default model path using Hype.py constants
-    default_model_path = f"{MODEL_SAVE_PATH}_epoch_{EPOCH}.pth"
+    default_model_path = f"results/model/best_model.pth"
     parser.add_argument('--model_file', type=str, default=default_model_path,
                         help=f'Path to the trained model file (.pth). Default: {default_model_path}')
     args = parser.parse_args()
@@ -28,8 +27,8 @@ def main():
 
     # --- 1. Load Tokenizer & Model ---
     print("Loading tokenizer and model...")
-    tokenizer_name = 'bert-base-chinese'  # Or load from a config if varies
-    model_bert_name = 'bert-base-chinese'  # Or load from a config if varies
+    tokenizer_name = 'bert-base-chinese' # Or load from a config if varies
+    model_bert_name = 'bert-base-chinese' # Or load from a config if varies
 
     tokenizer = BertTokenizerFast.from_pretrained(tokenizer_name)
     model = HateSpeechDetectionModel(bert_model_name=model_bert_name)
@@ -51,8 +50,7 @@ def main():
         model.eval()
         print("Tokenizer and model loaded successfully.")
     except FileNotFoundError:
-        print(
-            f"Error: Model file not found at {model_file_path}. Please check the path and ensure the model is trained and saved.")
+        print(f"Error: Model file not found at {model_file_path}. Please check the path and ensure the model is trained and saved.")
         exit(1)
     except Exception as e:
         print(f"Error loading model: {e}")
@@ -63,7 +61,7 @@ def main():
     print(f"Loading data from {args.input_file}...")
     try:
         with open(args.input_file, 'r', encoding='utf-8') as f:
-            data_to_predict = json.load(f)  # Assumes a list of items
+            data_to_predict = json.load(f) # Assumes a list of items
         # Ensure data_to_predict is a list, even if the file contains a single JSON object.
         if not isinstance(data_to_predict, list):
             data_to_predict = [data_to_predict]
@@ -84,16 +82,16 @@ def main():
 
     # --- 3. Perform Prediction ---
     print("Performing predictions...")
-    all_predictions_formatted = []  # Will store lines for the output file
+    all_predictions_formatted = [] # Will store lines for the output file
 
-    with torch.no_grad():  # Ensure no gradients are calculated during inference
+    with torch.no_grad(): # Ensure no gradients are calculated during inference
         for item_idx, item in enumerate(data_to_predict):
             print(f"Processing item {item_idx + 1}/{len(data_to_predict)}...")
             # Assuming each item is a dict and has a 'content' field for the text.
             # Modify 'content' if your JSON structure uses a different key.
             text_content = item.get('content')
             if text_content is None:
-                print(f"Warning: Item {item_idx + 1} does not have a 'content' field. Skipping.")
+                print(f"Warning: Item {item_idx+1} does not have a 'content' field. Skipping.")
                 # Add a SEP even for skipped items if required by output format, or handle as error.
                 # For now, just skipping actual prediction for this item.
                 # If an empty prediction is needed:
@@ -105,16 +103,15 @@ def main():
             inputs = tokenizer(
                 text_content,
                 max_length=MAX_SEQ_LENGTH,
-                padding='max_length',  # Pad to max_length
-                truncation=True,  # Truncate if longer than max_length
-                return_tensors="pt"  # Return PyTorch tensors
+                padding='max_length', # Pad to max_length
+                truncation=True,      # Truncate if longer than max_length
+                return_tensors="pt"   # Return PyTorch tensors
             )
 
-            input_ids = inputs['input_ids'].to(device)  # Shape: [1, MAX_SEQ_LENGTH]
-            attention_mask = inputs['attention_mask'].to(device)  # Shape: [1, MAX_SEQ_LENGTH]
+            input_ids = inputs['input_ids'].to(device) # Shape: [1, MAX_SEQ_LENGTH]
+            attention_mask = inputs['attention_mask'].to(device) # Shape: [1, MAX_SEQ_LENGTH]
             # BERT models generally expect token_type_ids as well
-            token_type_ids = inputs.get('token_type_ids', torch.zeros_like(input_ids)).to(
-                device)  # Shape: [1, MAX_SEQ_LENGTH]
+            token_type_ids = inputs.get('token_type_ids', torch.zeros_like(input_ids)).to(device) # Shape: [1, MAX_SEQ_LENGTH]
 
             # Model forward pass
             model_outputs = model(
@@ -131,24 +128,24 @@ def main():
             # The model output dict should directly provide these for the single sample.
             # We also need to pass the original input_ids and attention_mask for convert_logits_to_quads
             outputs_for_quad_conversion = {
-                'target_start_logits': model_outputs['target_start_logits'],  # Already [1, L, 1] or [1,L] from model
+                'target_start_logits': model_outputs['target_start_logits'], # Already [1, L, 1] or [1,L] from model
                 'target_end_logits': model_outputs['target_end_logits'],
                 'argument_start_logits': model_outputs['argument_start_logits'],
                 'argument_end_logits': model_outputs['argument_end_logits'],
-                'sequence_output': model_outputs['sequence_output'],  # Already [1, L, H]
-                'cls_output': model_outputs['cls_output'],  # Already [1, H]
-                'input_ids': input_ids,  # Pass the tokenized input_ids [1, L]
-                'attention_mask': attention_mask  # Pass the attention_mask [1, L]
+                'sequence_output': model_outputs['sequence_output'], # Already [1, L, H]
+                'cls_output': model_outputs['cls_output'],           # Already [1, H]
+                'input_ids': input_ids, # Pass the tokenized input_ids [1, L]
+                'attention_mask': attention_mask # Pass the attention_mask [1, L]
             }
 
             # Convert logits to quads
             # MAX_SEQ_LENGTH is available from Hype.py import
             predicted_quads_for_sample = convert_logits_to_quads(
                 outputs_for_quad_conversion,
-                input_ids,  # sample_input_ids for decoding text from tokens
+                input_ids, # sample_input_ids for decoding text from tokens
                 tokenizer,
-                MAX_SEQ_LENGTH,  # seq_len for span generation logic inside convert_logits_to_quads
-                model  # model instance for _get_span_representation and classifiers
+                MAX_SEQ_LENGTH, # seq_len for span generation logic inside convert_logits_to_quads
+                model          # model instance for _get_span_representation and classifiers
             )
 
             # Format quads for output

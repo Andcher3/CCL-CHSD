@@ -61,7 +61,8 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             span_weight=1.0,
             group_weight=0.6,
             hateful_weight=0.8,
-            biaffine_weight=0.4
+            biaffine_weight=0.4,
+            diversity_loss_weight=0.1
             # 可以传入权重，例如 span_weight=1.0, group_weight=0.5, hateful_weight=0.5
         )
 
@@ -79,11 +80,12 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             remaining_time = avg_batch_time * (len(dataloader) - (batch_idx + 1))
 
             print(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, "
-                  f"Total Loss: {loss.item():.4f} | "
+                  f"Total: {loss.item():.4f} | "
                   f"IOU/KL Span: {loss_components.get('iou_span_loss', 0.0):.4f}/{loss_components.get('kl_span_loss', 0.0):.3f} | "  # 使用.get()确保即使组件不存在也不会报错
-                  f"Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f} | "
+                  f"Biaff: {loss_components.get('biaffine_loss', 0.0):.4f} | "
                   f"Group: {loss_components.get('group_loss', 0.0):.4f} | "
                   f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "
+                  f"Diver: {loss_components.get('diversity_loss', 0.0):.4f} | "
                   f"Time: {avg_batch_time:.2f}s/batch | Est. Remaining: {remaining_time:.0f}s")
             # 重置计时器，使每次打印的时间更准确反映最近的 batch
             # start_time = time.time() # 如果想统计每10个batch的平均时间，可以取消注释
