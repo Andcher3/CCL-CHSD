@@ -347,9 +347,8 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
 
     # NMS parameters are now imported from Hype.py via "from Hype import *"
     # APPLY_NMS, NMS_IOU_THRESHOLD_TARGET, NMS_IOU_THRESHOLD_ARGUMENT, NMS_CONTAINMENT_THRESHOLD
-    # Placeholders for new Hype.py constants to be added in the next step
-    NON_HATE_DETERMINATION_MARGIN_PLACEHOLDER = 0.1
-    MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER = 0.4
+    # Sophisticated non-hate determination constants NON_HATE_DETERMINATION_MARGIN and
+    # MIN_SPECIFIC_HATE_GROUP_THRESHOLD are also imported from Hype.py via "from Hype import *"
 
 
     quads_for_nms = []
@@ -423,7 +422,7 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
                     if current_group_prob > max_specific_hate_prob:
                         max_specific_hate_prob = current_group_prob
                         strongest_specific_hate_label = TARGET_GROUP_CLASS_NAME[j]
-                    if current_group_prob > MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER:
+                    if current_group_prob > MIN_SPECIFIC_HATE_GROUP_THRESHOLD: # Use imported constant
                         num_specific_hate_candidate_groups += 1
 
             # If no specific group had prob > 0, and 'others' is a valid group,
@@ -440,14 +439,14 @@ def convert_logits_to_quads(outputs_for_a_sample: Dict[str, torch.Tensor],
             final_hateful_str = ""
             final_predicted_groups_list = []
 
-            if combined_score_non_hate >= combined_score_hate + NON_HATE_DETERMINATION_MARGIN_PLACEHOLDER:
+            if combined_score_non_hate >= combined_score_hate + NON_HATE_DETERMINATION_MARGIN: # Use imported constant
                 final_hateful_str = "non-hate"
                 final_predicted_groups_list = [TARGET_GROUP_CLASS_NAME[non_hate_group_idx] if non_hate_group_idx != -1 else non_hate_group_label_str]
             else: # Hate is dominant or margin not met
                 final_hateful_str = "hate"
                 temp_specific_groups = []
                 for k in range(len(TARGET_GROUP_CLASS_NAME)):
-                    if k != non_hate_group_idx and group_probs_single[k].item() > MIN_SPECIFIC_HATE_GROUP_THRESHOLD_PLACEHOLDER:
+                    if k != non_hate_group_idx and group_probs_single[k].item() > MIN_SPECIFIC_HATE_GROUP_THRESHOLD: # Use imported constant
                         temp_specific_groups.append(TARGET_GROUP_CLASS_NAME[k])
 
                 if not temp_specific_groups:

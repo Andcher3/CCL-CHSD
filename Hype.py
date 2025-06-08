@@ -36,6 +36,10 @@ NMS_IOU_THRESHOLD_TARGET = 0.7  # IoU threshold for target spans
 NMS_IOU_THRESHOLD_ARGUMENT = 0.7  # IoU threshold for argument spans
 NMS_CONTAINMENT_THRESHOLD = 0.85  # Min portion of one span covered by another to be considered similar
 
+# --- Sophisticated Non-Hate Determination ---
+NON_HATE_DETERMINATION_MARGIN = 0.1  # How much higher combined_score_non_hate needs to be
+MIN_SPECIFIC_HATE_GROUP_THRESHOLD = 0.4  # Min probability for a specific hate group to be included if combined_score_hate is dominant
+
 if __name__ == '__main__':
     import torch
     print(torch.cuda.is_available())
