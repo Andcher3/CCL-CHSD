@@ -3,7 +3,7 @@
 TARGET_GROUP_CLASS_NAME = ['Region', 'Racism', 'Sexism', 'LGBTQ', 'others', 'non-hate']
 MODEL_NAME = "hfl/chinese-macbert-large"
 # MODEL_NAME = "hfl/chinese-roberta-wwm-ext"
-# MODEL_NAME = "hfl/chinese-bert-base"
+# MODEL_NAME = "hfl/chinese-roberta-wwm-ext-large"
 
 # max original text length
 MAX_SEQ_LENGTH = 128

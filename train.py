@@ -15,10 +15,32 @@ from Model import HateSpeechDetectionModel  # 你的模型
 from eval import evaluate_model
 # 导入即将创建的损失计算函数
 from loss import compute_total_loss  # 假设这个函数将在 loss_calculator.py 中定义
+import logging
 
+# Configure logger
+logger = logging.getLogger('training_logger')
+logger.setLevel(logging.INFO)
+
+# File handler
+fh = logging.FileHandler('training.log')
+fh.setLevel(logging.INFO)
+
+# Stream handler
+sh = logging.StreamHandler()
+sh.setLevel(logging.INFO)
+
+# Formatter
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+fh.setFormatter(formatter)
+sh.setFormatter(formatter)
+
+# Add handlers to logger
+logger.addHandler(fh)
+logger.addHandler(sh)
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+# print(f"Using device: {device}")
+logger.info(f"Using device: {device}")
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
@@ -32,6 +54,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
     :return: avg_epoch_loss
     """
 
+    logger.info(f"Starting Epoch {epoch + 1}...")
     model.train()  # 设置模型为训练模式
     total_loss_sum = 0
     start_time = time.time()
@@ -79,31 +102,46 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             avg_batch_time = elapsed_time / (batch_idx + 1)
             remaining_time = avg_batch_time * (len(dataloader) - (batch_idx + 1))
 
-            print(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, "
-                  f"Total: {loss.item():.4f} | "
-                  f"IOU/KL Span: {loss_components.get('iou_span_loss', 0.0):.4f}/{loss_components.get('kl_span_loss', 0.0):.3f} | "  # 使用.get()确保即使组件不存在也不会报错
-                  f"Biaff: {loss_components.get('biaffine_loss', 0.0):.4f} | "
-                  f"Group: {loss_components.get('group_loss', 0.0):.4f} | "
-                  f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "
-                  f"Diver: {loss_components.get('diversity_loss', 0.0):.4f} | "
-                  f"Time: {avg_batch_time:.2f}s/batch | Est. Remaining: {remaining_time:.0f}s")
-            # 重置计时器，使每次打印的时间更准确反映最近的 batch
-            # start_time = time.time() # 如果想统计每10个batch的平均时间，可以取消注释
+            # print(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, "
+            #       f"Total: {loss.item():.4f} | "
+            #       f"IOU/KL Span: {loss_components.get('iou_span_loss', 0.0):.4f}/{loss_components.get('kl_span_loss', 0.0):.3f} | "  # 使用.get()确保即使组件不存在也不会报错
+            #       f"Biaff: {loss_components.get('biaffine_loss', 0.0):.4f} | "
+            #       f"Group: {loss_components.get('group_loss', 0.0):.4f} | "
+            #       f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "
+            #       f"Diver: {loss_components.get('diversity_loss', 0.0):.4f} | "
+            #       f"Time: {avg_batch_time:.2f}s/batch | Est. Remaining: {remaining_time:.0f}s")
+            
+            current_lr = scheduler.get_last_lr()[0]
+
+            logger.info(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, LR: {current_lr:.2e}")
+            logger.info(f"  Losses - Total: {loss.item():.4f}")
+            logger.info(f"    Components - IOU Span: {loss_components.get('iou_span_loss', 0.0):.4f}, KL Span: {loss_components.get('kl_span_loss', 0.0):.3f}")
+            logger.info(f"    Components - Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f}, Group: {loss_components.get('group_loss', 0.0):.4f}")
+            logger.info(f"    Components - Hateful: {loss_components.get('hateful_loss', 0.0):.4f}, Diversity: {loss_components.get('diversity_loss', 0.0):.4f}")
+            logger.info(f"  Performance - Time/Batch: {avg_batch_time:.2f}s, Est. Remaining: {remaining_time:.0f}s")
+
 
     avg_epoch_loss = total_loss_sum / len(dataloader)
-    print(f"\n--- Epoch {epoch + 1} Summary ---")
-    print(f"Average Total Loss for Epoch: {avg_epoch_loss:.4f}")
-    print(f"Epoch Training Time: {time.time() - start_time:.2f} seconds")
-
+    # print(f"\n--- Epoch {epoch + 1} Summary ---")
+    # print(f"Average Total Loss for Epoch: {avg_epoch_loss:.4f}")
+    # print(f"Epoch Training Time: {time.time() - start_time:.2f} seconds")
+    
+    logger.info(f"\n--- Epoch {epoch + 1} Summary ---")
+    logger.info(f"Average Total Loss for Epoch: {avg_epoch_loss:.4f}")
+    logger.info(f"Epoch Training Time: {time.time() - start_time:.2f} seconds")
+    logger.info(f"Finished Epoch {epoch + 1}.")
+    
     return avg_epoch_loss
 
 
 def main():
+    logger.info("Starting training process...")
     if not os.path.exists(MODEL_SAVE_PATH):
         os.makedirs(MODEL_SAVE_PATH)
 
     # 1. 数据加载与预处理
-    print("Loading and preprocessing data...")
+    # print("Loading and preprocessing data...")
+    logger.info("Loading and preprocessing data...")
     train_path = os.path.join("data", "train.json")
     processed_train_data, processed_test_data = load_data(train_path, split_ratio=0.3)
     train_features = convert_samples_to_features(processed_train_data)
@@ -114,16 +152,22 @@ def main():
     test_dataset = CHSDDataset(test_features)
     test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn)
 
-    print(f"Training data loaded. {len(train_dataloader)} batches, {len(processed_train_data)} samples.")
-    print(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
+    # print(f"Training data loaded. {len(train_dataloader)} batches, {len(processed_train_data)} samples.")
+    # print(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
+    logger.info(f"Training data loaded. {len(train_dataloader)} batches, {len(processed_train_data)} samples.")
+    logger.info(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
+
 
     # 2. 模型实例化
-    print("Initializing model...")
+    # print("Initializing model...")
+    logger.info("Initializing model...")
     model = HateSpeechDetectionModel(bert_model_name='bert-base-chinese').to(device)
-    print("Model initialized.")
+    # print("Model initialized.")
+    logger.info("Model initialized.")
 
     # 3. 优化器和学习率调度器
-    print("Setting up optimizer and scheduler...")
+    # print("Setting up optimizer and scheduler...")
+    logger.info("Setting up optimizer and scheduler...")
     no_decay = ['bias', 'LayerNorm.weight']
     optimizer_grouped_parameters = [
         {'params': [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
@@ -135,32 +179,45 @@ def main():
     total_steps = len(train_dataloader) * EPOCH  # batch_num * epoch = total_steps
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=total_steps * 0.1,
                                                 num_training_steps=total_steps)
-    print(f"Optimizer and scheduler set up. Total steps: {total_steps}")
+    # print(f"Optimizer and scheduler set up. Total steps: {total_steps}")
+    logger.info(f"Optimizer and scheduler set up. Total steps: {total_steps}")
 
     # 4. 训练循环
-    print("\n--- Starting Training ---")
+    # print("\n--- Starting Training ---")
+    logger.info("\n--- Starting Training ---")
     best_avg_f1 = 0
     for epoch in range(EPOCH):
         train_loss = train_epoch(model, train_dataloader, optimizer, scheduler, epoch)
 
         metrics = evaluate_model(model, test_dataloader, tokenizer, device)
-        print(f"Validation Hard F1: {metrics['hard_f1']:.4f}")
-        print(f"Validation Soft F1: {metrics['soft_f1']:.4f}")
-        print(f"Validation Average F1: {metrics['average_f1']:.4f}")
+        # print(f"Validation Hard F1: {metrics['hard_f1']:.4f}")
+        # print(f"Validation Soft F1: {metrics['soft_f1']:.4f}")
+        # print(f"Validation Average F1: {metrics['average_f1']:.4f}")
+        logger.info(f"Validation Hard F1: {metrics['hard_f1']:.4f}")
+        logger.info(f"Validation Soft F1: {metrics['soft_f1']:.4f}")
+        logger.info(f"Validation Average F1: {metrics['average_f1']:.4f}")
+
 
         if metrics['average_f1'] > best_avg_f1:
             best_avg_f1 = metrics['average_f1']
             torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, "best_model.pth"))
+            logger.info(f"Epoch {epoch+1}: New best model saved with Average F1: {best_avg_f1:.4f}")
+
 
         # 可以在这里添加验证集的评估、模型保存等逻辑
         if (epoch + 1) % SAVE_EPOCH == 0:
             torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, f"model_epoch_{epoch + 1}.pth"))
-
+            logger.info(f"Model saved at epoch {epoch + 1}")
         # torch.cuda.empty_cache()
 
     print("\n--- Training Finished ---")
+    logger.info("\n--- Training Finished ---")
+    print(f"Best Average F1: {best_avg_f1:.4f}")
+    logger.info(f"Best Average F1: {best_avg_f1:.4f}")
     # 最终模型保存
     torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, "final_model.pth"))
+    logger.info("Final model saved.")
+    logger.info("Training process finished.")
 
 
 if __name__ == '__main__':

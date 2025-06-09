@@ -1,15 +1,15 @@
 # from transformers import BertTokenizer # <-- 删除或注释掉这一行
-from transformers import BertTokenizerFast  # <-- 修改为导入 BertTokenizerFast
+from transformers import AutoTokenizer    # <-- 修改为导入 BertTokenizerFast
 import torch
 from typing import List, Dict, Any
 from Hype import *
 
 
 # 1. 加载BERT分词器
-tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)  # 或者 'hfl/chinese-bert-wwm-ext'
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)  # 或者 'hfl/chinese-bert-wwm-ext'
 
 
-def convert_samples_to_features(processed_data: List[Dict[str, Any]], tokenizer: BertTokenizerFast = tokenizer,
+def convert_samples_to_features(processed_data: List[Dict[str, Any]], tokenizer: AutoTokenizer = tokenizer,
                                 max_seq_length: int = MAX_SEQ_LENGTH):  # 注意类型提示也相应修改
     features = []
     for sample in processed_data:

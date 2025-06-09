@@ -1,7 +1,7 @@
 # model.py
 import torch
 import torch.nn as nn
-from transformers import BertModel
+from transformers import AutoModel
 from Biaffine import BiaffinePairing  # 导入Biaffine模块
 from typing import List, Dict, Any
 
@@ -12,7 +12,7 @@ from Hype import *
 class HateSpeechDetectionModel(nn.Module):
     def __init__(self, bert_model_name=MODEL_NAME):
         super().__init__()
-        self.bert = BertModel.from_pretrained(bert_model_name)
+        self.bert = AutoModel.from_pretrained(bert_model_name)
         self.hidden_size = self.bert.config.hidden_size  # BERT隐藏层维度
 
         # --- Span Extraction Heads ---
