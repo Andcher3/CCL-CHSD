@@ -43,6 +43,10 @@ MIN_SPECIFIC_HATE_GROUP_THRESHOLD = 0.4  # Min probability for a specific hate g
 # --- Diversity Loss Configuration ---
 ENABLE_DIVERSITY_LOSS = True  # Master switch for the diversity loss
 
+# --- Span Loss Function Switches ---
+USE_SPAN_IOU_WEIGHTED_LOSS = True  # If False, uses BCEWithLogitsLoss instead
+USE_SPAN_BOUNDARY_SMOOTH_KL_DIV_LOSS = True  # If False, uses BCEWithLogitsLoss instead
+
 if __name__ == '__main__':
     import torch
     print(torch.cuda.is_available())

@@ -14,7 +14,7 @@ class HateSpeechDetectionModel(nn.Module):
         super().__init__()
         self.bert = AutoModel.from_pretrained(bert_model_name)
         self.hidden_size = self.bert.config.hidden_size  # BERT隐藏层维度
-
+        print(self.hidden_size)
         # --- Span Extraction Heads ---
         # 预测Target Span的起始和结束位置
         self.target_start_head = nn.Linear(self.hidden_size, 1)
@@ -134,4 +134,7 @@ class HateSpeechDetectionModel(nn.Module):
 
 
 if __name__ == '__main__':
-    model = HateSpeechDetectionModel(bert_model_name='bert-base-chinese')
+    # import os
+    #
+    # os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+    model = HateSpeechDetectionModel(bert_model_name=MODEL_NAME)

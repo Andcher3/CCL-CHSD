@@ -41,6 +41,8 @@ logger.addHandler(sh)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # print(f"Using device: {device}")
 logger.info(f"Using device: {device}")
+logger.info(f"USE_SPAN_IOU_WEIGHTED_LOSS: {USE_SPAN_IOU_WEIGHTED_LOSS}")
+logger.info(f"USE_SPAN_BOUNDARY_SMOOTH_KL_DIV_LOSS: {USE_SPAN_BOUNDARY_SMOOTH_KL_DIV_LOSS}")
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
@@ -110,27 +112,29 @@ def train_epoch(model, dataloader, optimizer, scheduler, epoch=EPOCH):
             #       f"Hateful: {loss_components.get('hateful_loss', 0.0):.4f} | "
             #       f"Diver: {loss_components.get('diversity_loss', 0.0):.4f} | "
             #       f"Time: {avg_batch_time:.2f}s/batch | Est. Remaining: {remaining_time:.0f}s")
-            
+
             current_lr = scheduler.get_last_lr()[0]
 
             logger.info(f"Epoch {epoch + 1}, Batch {batch_idx + 1}/{len(dataloader)}, LR: {current_lr:.2e}")
             logger.info(f"  Losses - Total: {loss.item():.4f}")
-            logger.info(f"    Components - IOU Span: {loss_components.get('iou_span_loss', 0.0):.4f}, KL Span: {loss_components.get('kl_span_loss', 0.0):.3f}")
-            logger.info(f"    Components - Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f}, Group: {loss_components.get('group_loss', 0.0):.4f}")
-            logger.info(f"    Components - Hateful: {loss_components.get('hateful_loss', 0.0):.4f}, Diversity: {loss_components.get('diversity_loss', 0.0):.4f}")
+            logger.info(
+                f"    Components - IOU Span: {loss_components.get('iou_span_loss', 0.0):.4f}, KL Span: {loss_components.get('kl_span_loss', 0.0):.3f}")
+            logger.info(
+                f"    Components - Biaffine: {loss_components.get('biaffine_loss', 0.0):.4f}, Group: {loss_components.get('group_loss', 0.0):.4f}")
+            logger.info(
+                f"    Components - Hateful: {loss_components.get('hateful_loss', 0.0):.4f}, Diversity: {loss_components.get('diversity_loss', 0.0):.4f}")
             logger.info(f"  Performance - Time/Batch: {avg_batch_time:.2f}s, Est. Remaining: {remaining_time:.0f}s")
-
 
     avg_epoch_loss = total_loss_sum / len(dataloader)
     # print(f"\n--- Epoch {epoch + 1} Summary ---")
     # print(f"Average Total Loss for Epoch: {avg_epoch_loss:.4f}")
     # print(f"Epoch Training Time: {time.time() - start_time:.2f} seconds")
-    
+
     logger.info(f"\n--- Epoch {epoch + 1} Summary ---")
     logger.info(f"Average Total Loss for Epoch: {avg_epoch_loss:.4f}")
     logger.info(f"Epoch Training Time: {time.time() - start_time:.2f} seconds")
     logger.info(f"Finished Epoch {epoch + 1}.")
-    
+
     return avg_epoch_loss
 
 
@@ -156,7 +160,6 @@ def main():
     # print(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
     logger.info(f"Training data loaded. {len(train_dataloader)} batches, {len(processed_train_data)} samples.")
     logger.info(f"Testing data loaded. {len(test_dataloader)} batches, {len(processed_test_data)} samples.")
-
 
     # 2. 模型实例化
     # print("Initializing model...")
@@ -197,12 +200,10 @@ def main():
         logger.info(f"Validation Soft F1: {metrics['soft_f1']:.4f}")
         logger.info(f"Validation Average F1: {metrics['average_f1']:.4f}")
 
-
         if metrics['average_f1'] > best_avg_f1:
             best_avg_f1 = metrics['average_f1']
             torch.save(model.state_dict(), os.path.join(MODEL_SAVE_PATH, "best_model.pth"))
-            logger.info(f"Epoch {epoch+1}: New best model saved with Average F1: {best_avg_f1:.4f}")
-
+            logger.info(f"Epoch {epoch + 1}: New best model saved with Average F1: {best_avg_f1:.4f}")
 
         # 可以在这里添加验证集的评估、模型保存等逻辑
         if (epoch + 1) % SAVE_EPOCH == 0:

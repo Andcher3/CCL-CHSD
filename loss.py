@@ -6,7 +6,6 @@ from iou_loss import SpanIoUWeightedLoss, SpanBoundarySmoothKLDivLoss
 from Hype import *  # 假设 Hype.py 中定义了这两个常量
 import torch.nn.functional as F
 
-
 target_span_iou_loss_fct = SpanIoUWeightedLoss(
     alpha=BOUNDARY_SMOOTHING_EPSILON,  # 对应 IoU Loss 的 alpha
     gamma=BOUNDARY_SMOOTHING_D,  # 对应 IoU Loss 的 gamma
@@ -62,11 +61,12 @@ def _make_arg_end_labels(quads_labels_batch, seq_len, device):
                 labels[b, ae_idx] = 1.0
     return labels
 
+
 # ===== Diversity Loss Function =====
 def calculate_diversity_loss(
-    per_sample_matched_pred_span_probs: List[List[Dict[str, torch.Tensor]]], 
-    per_sample_matched_gt_indices: List[List[int]], 
-    device: torch.device
+        per_sample_matched_pred_span_probs: List[List[Dict[str, torch.Tensor]]],
+        per_sample_matched_gt_indices: List[List[int]],
+        device: torch.device
 ) -> torch.Tensor:
     """
     Calculates diversity loss based on similarity of predicted span probability distributions
@@ -96,10 +96,10 @@ def calculate_diversity_loss(
 
         if num_matched_preds_in_sample < 2:
             continue
-        
+
         # Only count this sample if it has potential for diversity pairs
         # This flag will be set true if at least one valid diversity pair is found
-        sample_contributed_to_loss = False 
+        sample_contributed_to_loss = False
         sample_diversity_loss = torch.tensor(0.0, device=device)
         num_diversity_pairs_in_sample = 0
 
@@ -115,7 +115,7 @@ def calculate_diversity_loss(
                     # Target Start Probs Similarity
                     similarity_ts = torch.sum(pred_A_probs_dict['ts_probs'] * pred_B_probs_dict['ts_probs'])
                     sample_diversity_loss += similarity_ts
-                    
+
                     # Target End Probs Similarity
                     similarity_te = torch.sum(pred_A_probs_dict['te_probs'] * pred_B_probs_dict['te_probs'])
                     sample_diversity_loss += similarity_te
@@ -127,22 +127,52 @@ def calculate_diversity_loss(
                     # Argument End Probs Similarity
                     similarity_ae = torch.sum(pred_A_probs_dict['ae_probs'] * pred_B_probs_dict['ae_probs'])
                     sample_diversity_loss += similarity_ae
-                    
+
                     num_diversity_pairs_in_sample += 1
                     if not sample_contributed_to_loss:
                         sample_contributed_to_loss = True
 
         if num_diversity_pairs_in_sample > 0:
             total_diversity_loss += (sample_diversity_loss / num_diversity_pairs_in_sample)
-        
-        if sample_contributed_to_loss: # if we found any pair A,B where gt_idx_A != gt_idx_B
-             num_samples_with_diversity_pairs +=1
 
+        if sample_contributed_to_loss:  # if we found any pair A,B where gt_idx_A != gt_idx_B
+            num_samples_with_diversity_pairs += 1
 
     if num_samples_with_diversity_pairs > 0:
         return total_diversity_loss / num_samples_with_diversity_pairs
     else:
         return torch.tensor(0.0, device=device)
+
+
+import torch.nn.functional as F  # Make sure F is available
+
+
+def _calculate_standard_bce_span_loss(start_logits, end_logits, quads_labels_batch, device, span_type_key_prefix):
+    B, L = start_logits.size()
+    start_labels = torch.zeros((B, L), device=device)
+    end_labels = torch.zeros((B, L), device=device)
+
+    start_key = f'{span_type_key_prefix}_start_token'
+    end_key = f'{span_type_key_prefix}_end_token'
+
+    for b, quads_list in enumerate(quads_labels_batch):
+        for quad in quads_list:
+            # Ensure 't_start_token', etc. are valid tensor indices or convert carefully
+            s_val = quad[start_key]
+            e_val = quad[end_key]
+
+            # Check if the values are tensors and extract item() if so
+            s = s_val.item() if torch.is_tensor(s_val) and s_val.numel() == 1 else s_val
+            e = e_val.item() if torch.is_tensor(e_val) and e_val.numel() == 1 else e_val
+
+            if isinstance(s, int) and 0 <= s < L:
+                start_labels[b, s] = 1.0
+            if isinstance(e, int) and 0 <= e < L:
+                end_labels[b, e] = 1.0
+
+    loss_start = F.binary_cross_entropy_with_logits(start_logits, start_labels, reduction="mean")
+    loss_end = F.binary_cross_entropy_with_logits(end_logits, end_labels, reduction="mean")
+    return loss_start + loss_end
 
 
 # ===== 4. compute_total_loss 的完整实现 =====
@@ -196,29 +226,48 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
                 }
                 sample_span_probs_for_diversity.append(current_pred_span_probs)
                 sample_gt_indices_for_diversity.append(k_gt_idx)
-        
+
         batch_span_probs_for_diversity.append(sample_span_probs_for_diversity)
         batch_gt_indices_for_diversity.append(sample_gt_indices_for_diversity)
 
-    # ---- 2. Span Extraction Loss (IoU-Weighted BCE + Boundary-Smooth KL) ----
-    # 2a. 计算 IoU 加权 BCE Loss
-    target_span_iou_loss_component = target_span_iou_loss_fct(
-        t_start_logits, t_end_logits, quads_labels_batch, device
-    )
-    argument_span_iou_loss_component = argument_span_iou_loss_fct(
-        a_start_logits, a_end_logits, quads_labels_batch, device
-    )
-    total_span_iou_loss_component = target_span_iou_loss_component + argument_span_iou_loss_component
+    # ---- 2. Span Extraction Loss ----
+    # 2a. Calculate IoU-Weighted BCE Loss or Standard BCE Loss
+    if USE_SPAN_IOU_WEIGHTED_LOSS:
+        target_iou_loss_val = target_span_iou_loss_fct(
+            t_start_logits, t_end_logits, quads_labels_batch, device
+        )
+        argument_iou_loss_val = argument_span_iou_loss_fct(
+            a_start_logits, a_end_logits, quads_labels_batch, device
+        )
+    else:
+        # print("Using Standard BCE for IoU component") # Optional: for debugging
+        target_iou_loss_val = _calculate_standard_bce_span_loss(
+            t_start_logits, t_end_logits, quads_labels_batch, device, 't'
+        )
+        argument_iou_loss_val = _calculate_standard_bce_span_loss(
+            a_start_logits, a_end_logits, quads_labels_batch, device, 'a'
+        )
+    total_span_iou_loss_component = target_iou_loss_val + argument_iou_loss_val
 
-    # 2b. 计算边界平滑 KL 散度 Loss
-    target_span_kl_loss_component = target_span_kl_loss_fct(
-        t_start_logits, t_end_logits, quads_labels_batch, device
-    )
-    argument_span_kl_loss_component = argument_span_kl_loss_fct(
-        a_start_logits, a_end_logits, quads_labels_batch, device
-    )
-    total_span_kl_loss_component = target_span_kl_loss_component + argument_span_kl_loss_component
+    # 2b. Calculate Boundary-Smooth KL Divergence Loss or Standard BCE Loss
+    if USE_SPAN_BOUNDARY_SMOOTH_KL_DIV_LOSS:
+        target_kl_loss_val = target_span_kl_loss_fct(
+            t_start_logits, t_end_logits, quads_labels_batch, device
+        )
+        argument_kl_loss_val = argument_span_kl_loss_fct(
+            a_start_logits, a_end_logits, quads_labels_batch, device
+        )
+    else:
+        # print("Using Standard BCE for KL component") # Optional: for debugging
+        target_kl_loss_val = _calculate_standard_bce_span_loss(
+            t_start_logits, t_end_logits, quads_labels_batch, device, 't'
+        )
+        argument_kl_loss_val = _calculate_standard_bce_span_loss(
+            a_start_logits, a_end_logits, quads_labels_batch, device, 'a'
+        )
+    total_span_kl_loss_component = target_kl_loss_val + argument_kl_loss_val
 
+    # The rest of the function (weighting, other losses) remains the same.
     # 将两种 Span Loss 组件加权求和
     total_span_loss = (
             iou_loss_ratio * total_span_iou_loss_component +
@@ -294,7 +343,6 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
                             gold_pair_labels[i_idx, j_idx] = 1.0
                             break
 
-
         # 计算 BCEWithLogitsLoss
         total_pair_loss = pair_loss_fct(pair_logits, gold_pair_labels)
     else:
@@ -331,8 +379,8 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
         total_hateful_loss = torch.tensor(0.0, device=device)
 
     # ---- 5. Diversity Loss Calculation ----
-    diversity_loss_val = torch.tensor(0.0, device=device) # Initialize
-    if ENABLE_DIVERSITY_LOSS: # Use imported constant
+    diversity_loss_val = torch.tensor(0.0, device=device)  # Initialize
+    if ENABLE_DIVERSITY_LOSS:  # Use imported constant
         # Data collection for diversity loss is already done above
         diversity_loss_val = calculate_diversity_loss(
             batch_span_probs_for_diversity,
@@ -347,8 +395,8 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
             group_weight * total_group_loss +
             hateful_weight * total_hateful_loss
     )
-    if ENABLE_DIVERSITY_LOSS: # Use imported constant
-        loss += diversity_loss_val * diversity_loss_weight # Use imported constant
+    if ENABLE_DIVERSITY_LOSS:  # Use imported constant
+        loss += diversity_loss_val * diversity_loss_weight  # Use imported constant
 
     # 准备返回的各组件 Loss（转为 Python float 方便打印）
     loss_components = {
@@ -358,6 +406,6 @@ def compute_total_loss(outputs: Dict[str, torch.Tensor],
         'biaffine_loss': total_pair_loss.item(),
         'group_loss': total_group_loss.item(),
         'hateful_loss': total_hateful_loss.item(),
-        'diversity_loss': diversity_loss_val.item() # Add diversity loss component (will be 0.0 if not enabled)
+        'diversity_loss': diversity_loss_val.item()  # Add diversity loss component (will be 0.0 if not enabled)
     }
     return loss, loss_components
